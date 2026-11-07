@@ -47,4 +47,18 @@ describe('packages/crypto', () => {
     expect(timingSafeEqualString(token, 'my_secure_secret_token_12346')).toBe(false);
     expect(timingSafeEqualString(token, 'short')).toBe(false);
   });
+
+  it('should support arbitrary passphrases and irregular length keys safely', async () => {
+    const rawKey = 'dGVzdF9rZWtfMzJfYnl0ZXNfYmFzZTY0X2tleV9mb3JfZGV2XzEyMzQ='; // 41 bytes
+    const secretMessage = 'secret_zalo_data';
+
+    const encrypted = await encryptAesGcm(secretMessage, rawKey);
+    const decrypted = await decryptAesGcm(encrypted, rawKey);
+    expect(decrypted).toBe(secretMessage);
+
+    const plainPassphrase = 'any_arbitrary_user_passphrase_123';
+    const enc2 = await encryptAesGcm(secretMessage, plainPassphrase);
+    const dec2 = await decryptAesGcm(enc2, plainPassphrase);
+    expect(dec2).toBe(secretMessage);
+  });
 });

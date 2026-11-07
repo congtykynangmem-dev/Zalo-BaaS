@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { fetchApi } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import {
   Bot,
   Plus,
@@ -29,6 +30,7 @@ interface BotItem {
 }
 
 export default function BotsPage() {
+  const { logout } = useAuth();
   const [bots, setBots] = useState<BotItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [showWizard, setShowWizard] = useState(false);
@@ -270,8 +272,17 @@ export default function BotsPage() {
                 </div>
 
                 {wizardError && (
-                  <div className="mb-4 rounded-xl bg-red-50 p-3 text-xs text-red-600 border border-red-100">
-                    {wizardError}
+                  <div className="mb-4 rounded-xl bg-red-50 p-3 text-xs text-red-600 border border-red-100 flex flex-col gap-2">
+                    <p>{wizardError}</p>
+                    {wizardError.includes('đăng xuất') && (
+                      <button
+                        type="button"
+                        onClick={logout}
+                        className="self-start px-3 py-1.5 bg-red-600 text-white rounded-lg font-medium hover:bg-red-700 transition-colors"
+                      >
+                        Đăng xuất & Đăng nhập lại
+                      </button>
+                    )}
                   </div>
                 )}
 
@@ -285,7 +296,13 @@ export default function BotsPage() {
                       type="text"
                       required
                       value={botToken}
-                      onChange={(e) => setBotToken(e.target.value)}
+                      onChange={(e) => {
+                        let val = e.target.value.trim().replace(/^['"`\s]+|['"`\s]+$/g, '');
+                        if (val.toLowerCase().startsWith('bot') && val.includes(':')) {
+                          val = val.substring(3);
+                        }
+                        setBotToken(val);
+                      }}
                       placeholder="Ví dụ: 123456789:ABCdefGHIjklMNOpqrSTUvwxYZ"
                       className="mt-1 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs font-mono focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
                     />

@@ -39,5 +39,16 @@ app.route('/v1', documentsRouter);
 app.route('/v1', conversationsRouter);
 app.route('/v1/analytics', analyticsRouter);
 
+// Global Error Handler to guarantee clean JSON errors
+app.onError((err, c) => {
+  console.error('[Zalo-BaaS Control-API Unhandled Error]:', err);
+  return c.json(
+    {
+      error: err.message || 'Lỗi hệ thống máy chủ nội bộ',
+    },
+    500
+  );
+});
+
 export default app;
 

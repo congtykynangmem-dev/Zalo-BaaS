@@ -31,6 +31,9 @@ RUN pnpm --filter "./packages/**" run build
 RUN cd apps/control-api && npx tsc
 RUN cd apps/portal && npx next build
 
+# Volume for persistent SQLite storage
+VOLUME ["/app/data"]
+
 # Expose port (defaults to 3000, compatible with $PORT)
 ENV PORT=3000
 ENV HOST=0.0.0.0

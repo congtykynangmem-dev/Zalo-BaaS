@@ -48,6 +48,8 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
       message = 'Zalo từ chối xác thực token này (401 Unauthorized). Vui lòng mở lại mini-app "Zalo Bot Creator" trên Zalo để sao chép chuỗi Bot Token mới nhất.';
     } else if (message.toLowerCase().includes('not found') || message.includes('404')) {
       message = 'Không tìm thấy bot trên Zalo (404 Not Found). Vui lòng kiểm tra lại token đã sao chép đủ các ký tự chưa.';
+    } else if (message.toLowerCase().includes('fetch failed')) {
+      message = 'Không thể kết nối đến máy chủ Zalo (bot-api.zaloplatforms.com). Vui lòng kiểm tra kết nối mạng Internet hoặc cấu hình máy chủ.';
     }
     return c.json({ error: `Xác minh Bot thất bại: ${message}` }, 400);
   }

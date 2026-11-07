@@ -24,7 +24,8 @@ RUN pnpm install --frozen-lockfile
 # Copy all source files
 COPY . .
 
-# Build Portal
+# Build Control API and Portal
+RUN cd apps/control-api && npx tsc
 RUN cd apps/portal && npx next build
 
 # Expose port (defaults to 3000, compatible with $PORT)
@@ -39,3 +40,4 @@ HEALTHCHECK --interval=10s --timeout=3s --start-period=5s --retries=3 \
 
 # Start unified server
 CMD ["node", "server.js"]
+

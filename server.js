@@ -7,10 +7,118 @@ const HOST = process.env.HOST || '0.0.0.0';
 
 const portalDir = path.join(__dirname, 'apps', 'portal');
 const nextBuildDir = path.join(portalDir, '.next');
+const controlApiDist = path.join(__dirname, 'apps', 'control-api', 'dist', 'index.js');
 
 let nextHandler = null;
+let controlApiApp = null;
+let d1Database = null;
 
-// Initialize Next.js handler if available
+// Initialize native SQLite with D1-compatible interface for standalone container
+function initDatabase() {
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const dataDir = path.join(__dirname, 'data');
+    if (!fs.existsSync(dataDir)) {
+      fs.mkdirSync(dataDir, { recursive: true });
+    }
+    const dbPath = path.join(dataDir, 'zalo_baas.sqlite');
+    const db = new DatabaseSync(dbPath);
+
+    // Run schema migrations if not present
+    const m1Path = path.join(__dirname, 'migrations', '0001_init_schema.sql');
+    const m2Path = path.join(__dirname, 'migrations', '0002_seed_plans.sql');
+    if (fs.existsSync(m1Path)) {
+      db.exec(fs.readFileSync(m1Path, 'utf8'));
+    }
+    if (fs.existsSync(m2Path)) {
+      db.exec(fs.readFileSync(m2Path, 'utf8'));
+    }
+
+    // D1 interface wrapper
+    d1Database = {
+      prepare(sql) {
+        return {
+          bind(...params) {
+            return {
+              async run() {
+                const stmt = db.prepare(sql);
+                const info = stmt.run(...params);
+                return { success: true, meta: info };
+              },
+              async first() {
+                const stmt = db.prepare(sql);
+                return stmt.get(...params) || null;
+              },
+              async all() {
+                const stmt = db.prepare(sql);
+                return { results: stmt.all(...params) };
+              }
+            };
+          }
+        };
+      }
+    };
+    console.log(`[Zalo-BaaS] SQLite Database initialized at ${dbPath}`);
+  } catch (err) {
+    console.warn(`[Zalo-BaaS] SQLite init warning:`, err.message);
+  }
+}
+
+// In-memory KV Cache
+const inMemoryKv = new Map();
+const kvCache = {
+  async get(key) {
+    const item = inMemoryKv.get(key);
+    if (!item) return null;
+    if (item.expires && Date.now() > item.expires) {
+      inMemoryKv.delete(key);
+      return null;
+    }
+    return item.value;
+  },
+  async put(key, value, options) {
+    const expires = options?.expirationTtl ? Date.now() + options.expirationTtl * 1000 : undefined;
+    inMemoryKv.set(key, { value, expires });
+  },
+  async delete(key) {
+    inMemoryKv.delete(key);
+  }
+};
+
+// Fallback Vectorize
+const vectorIndex = {
+  async query() {
+    return { matches: [] };
+  },
+  async insert() {},
+  async upsert() {}
+};
+
+// Control API Environment
+const controlEnv = {
+  get DB() { return d1Database; },
+  JWT_SECRET: process.env.JWT_SECRET || 'zalo_baas_default_secret_jwt_key_2026',
+  KEK_V1: process.env.KEK_V1 || 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=',
+  GEMINI_API_KEY: process.env.GEMINI_API_KEY || '',
+  WEBHOOK_BASE_URL: process.env.WEBHOOK_BASE_URL || 'https://bot.knm.asia/v1/webhook/bot',
+  KV_CACHE: kvCache,
+  VECTORS: vectorIndex
+};
+
+// Initialize Control API
+function initControlApi() {
+  try {
+    if (fs.existsSync(controlApiDist)) {
+      const { app } = require(controlApiDist);
+      controlApiApp = app;
+      console.log(`[Zalo-BaaS] Control API initialized successfully.`);
+    }
+  } catch (err) {
+    console.warn(`[Zalo-BaaS] Control API init warning:`, err.message);
+  }
+}
+
+// Initialize Next.js handler
 function initNext() {
   try {
     const nextPkg = require.resolve('next', { paths: [__dirname, portalDir] });
@@ -32,11 +140,41 @@ function initNext() {
   }
 }
 
+// Convert Node.js IncomingMessage to Web Standard Request
+async function nodeToWebRequest(req) {
+  const chunks = [];
+  for await (const chunk of req) chunks.push(chunk);
+  const body = req.method !== 'GET' && req.method !== 'HEAD' && chunks.length > 0 ? Buffer.concat(chunks) : undefined;
+  const protocol = req.headers['x-forwarded-proto'] || 'http';
+  const host = req.headers.host || `localhost:${PORT}`;
+  const url = `${protocol}://${host}${req.url}`;
+  return new Request(url, {
+    method: req.method,
+    headers: req.headers,
+    body
+  });
+}
+
+// Send Web Standard Response to Node.js ServerResponse
+async function sendWebResponse(webRes, res) {
+  const headers = Object.fromEntries(webRes.headers.entries());
+  res.writeHead(webRes.status, headers);
+  if (webRes.body) {
+    const reader = webRes.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      res.write(value);
+    }
+  }
+  res.end();
+}
+
 // Start HTTP server
-const server = http.createServer((req, res) => {
+const server = http.createServer(async (req, res) => {
   const url = req.url || '/';
 
-  // 1. Health check endpoints (Always return 200 OK for Docker/Kubernetes/PaaS health checks)
+  // 1. Health check endpoints
   if (
     url === '/health' ||
     url === '/healthz' ||
@@ -54,12 +192,50 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  // 2. Delegate to Next.js portal if ready
+  // 2. Control API routes (/v1/*)
+  if (url.startsWith('/v1/')) {
+    // If external CONTROL_API_URL is configured, proxy to it
+    const remoteApiUrl = process.env.CONTROL_API_URL;
+    if (remoteApiUrl) {
+      try {
+        const targetUrl = `${remoteApiUrl.replace(/\/$/, '')}${url}`;
+        const webReq = await nodeToWebRequest(req);
+        const proxyRes = await fetch(targetUrl, {
+          method: webReq.method,
+          headers: webReq.headers,
+          body: webReq.body,
+          duplex: 'half'
+        });
+        return sendWebResponse(proxyRes, res);
+      } catch (proxyErr) {
+        console.error(`[Zalo-BaaS] Proxy error:`, proxyErr.message);
+        res.writeHead(502, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: `Bad Gateway: ${proxyErr.message}` }));
+        return;
+      }
+    }
+
+    // Otherwise handle with local Control API
+    if (controlApiApp) {
+      try {
+        const webReq = await nodeToWebRequest(req);
+        const webRes = await controlApiApp.fetch(webReq, controlEnv);
+        return sendWebResponse(webRes, res);
+      } catch (apiErr) {
+        console.error(`[Zalo-BaaS] API Error:`, apiErr);
+        res.writeHead(500, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Internal Server Error' }));
+        return;
+      }
+    }
+  }
+
+  // 3. Delegate all other requests to Next.js portal
   if (nextHandler) {
     return nextHandler(req, res);
   }
 
-  // 3. Fallback response if Next.js is still preparing or in headless mode
+  // 4. Fallback response
   res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
   res.end(`<!DOCTYPE html>
 <html>
@@ -80,7 +256,6 @@ const server = http.createServer((req, res) => {
     <div class="badge">● Online</div>
     <h1>Zalo Bot-as-a-Service (BaaS)</h1>
     <p>Container đang hoạt động bình thường trên cổng <strong>${PORT}</strong>.</p>
-    <p>Hệ thống Edge Cloudflare Serverless sẵn sàng tiếp nhận Webhook Zalo Platform tại <code>bot.knm.asia</code>.</p>
   </div>
 </body>
 </html>`);
@@ -88,17 +263,18 @@ const server = http.createServer((req, res) => {
 
 server.listen(PORT, HOST, () => {
   console.log(`[Zalo-BaaS] Server listening on http://${HOST}:${PORT}`);
-  console.log(`[Zalo-BaaS] Health check available at http://${HOST}:${PORT}/health`);
+  console.log(`[Zalo-BaaS] Health check: http://${HOST}:${PORT}/health`);
+  initDatabase();
+  initControlApi();
   initNext();
 });
 
-// Graceful shutdown
 process.on('SIGTERM', () => {
-  console.log('[Zalo-BaaS] Received SIGTERM, shutting down gracefully...');
+  console.log('[Zalo-BaaS] Received SIGTERM, shutting down...');
   server.close(() => process.exit(0));
 });
 
 process.on('SIGINT', () => {
-  console.log('[Zalo-BaaS] Received SIGINT, shutting down gracefully...');
+  console.log('[Zalo-BaaS] Received SIGINT, shutting down...');
   server.close(() => process.exit(0));
 });

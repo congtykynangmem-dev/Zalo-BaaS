@@ -61,8 +61,15 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
     .map((b) => b.toString(16).padStart(2, '0'))
     .join('');
 
-  const webhookBase = c.env.WEBHOOK_BASE_URL.replace(/\/+$/, '');
-  const webhookUrl = `${webhookBase}/${botId}`;
+  // Auto-detect public URL from request headers if default placeholder is present
+  let webhookBase = c.env.WEBHOOK_BASE_URL;
+  const hostHeader = c.req.header('x-forwarded-host') || c.req.header('host');
+  const protoHeader = c.req.header('x-forwarded-proto') || 'https';
+  if ((!webhookBase || webhookBase.includes('bot.knm.asia')) && hostHeader && !hostHeader.includes('localhost')) {
+    webhookBase = `${protoHeader}://${hostHeader}/v1/webhook/bot`;
+  }
+  const cleanBase = (webhookBase || 'https://bot.knm.asia/v1/webhook/bot').replace(/\/+$/, '');
+  const webhookUrl = `${cleanBase}/${botId}`;
 
   // 1.3. Auto-configure webhook with Zalo Bot Platform
   let webhookRegistered = false;
@@ -159,7 +166,20 @@ botsRouter.get('/', async (c) => {
     .bind(tenantId)
     .all();
 
-  return c.json({ bots: result.results });
+  let webhookBase = c.env.WEBHOOK_BASE_URL;
+  const hostHeader = c.req.header('x-forwarded-host') || c.req.header('host');
+  const protoHeader = c.req.header('x-forwarded-proto') || 'https';
+  if ((!webhookBase || webhookBase.includes('bot.knm.asia')) && hostHeader && !hostHeader.includes('localhost')) {
+    webhookBase = `${protoHeader}://${hostHeader}/v1/webhook/bot`;
+  }
+  const cleanBase = (webhookBase || 'https://bot.knm.asia/v1/webhook/bot').replace(/\/+$/, '');
+
+  const botsWithWebhook = (result.results || []).map((bot: any) => ({
+    ...bot,
+    webhook_url: `${cleanBase}/${bot.id}`,
+  }));
+
+  return c.json({ bots: botsWithWebhook });
 });
 
 // 3. Get single bot details
@@ -178,13 +198,109 @@ botsRouter.get('/:id', async (c) => {
     return c.json({ error: 'Bot not found' }, 404);
   }
 
-  const webhookBase = c.env.WEBHOOK_BASE_URL.replace(/\/+$/, '');
+  let webhookBase = c.env.WEBHOOK_BASE_URL;
+  const hostHeader = c.req.header('x-forwarded-host') || c.req.header('host');
+  const protoHeader = c.req.header('x-forwarded-proto') || 'https';
+  if ((!webhookBase || webhookBase.includes('bot.knm.asia')) && hostHeader && !hostHeader.includes('localhost')) {
+    webhookBase = `${protoHeader}://${hostHeader}/v1/webhook/bot`;
+  }
+  const cleanBase = (webhookBase || 'https://bot.knm.asia/v1/webhook/bot').replace(/\/+$/, '');
+
   return c.json({
     bot: {
       ...bot,
-      webhook_url: `${webhookBase}/${botId}`,
+      webhook_url: `${cleanBase}/${botId}`,
     },
   });
+});
+
+// 4. Sync or Update Webhook on Zalo Bot Platform
+botsRouter.post('/:id/sync-webhook', async (c) => {
+  const user = c.get('user');
+  const botId = c.req.param('id');
+  const body = await c.req.json<{ webhook_url?: string }>().catch(() => ({ webhook_url: undefined }));
+
+  const bot = await c.env.DB.prepare('SELECT id, name FROM bots WHERE id = ? AND tenant_id = ?')
+    .bind(botId, user.tenant_id)
+    .first();
+
+  if (!bot) {
+    return c.json({ error: 'Bot not found' }, 404);
+  }
+
+  const cred = await c.env.DB.prepare(
+    'SELECT bot_token_enc, secret_token_enc FROM bot_credentials WHERE bot_id = ?'
+  )
+    .bind(botId)
+    .first<{ bot_token_enc: Uint8Array | ArrayBuffer; secret_token_enc: Uint8Array | ArrayBuffer }>();
+
+  if (!cred) {
+    return c.json({ error: 'Bot credentials missing' }, 404);
+  }
+
+  const tokenBytes = cred.bot_token_enc instanceof Uint8Array ? cred.bot_token_enc : new Uint8Array(cred.bot_token_enc);
+  const botToken = await decryptAesGcm(tokenBytes, c.env.KEK_V1);
+
+  const secretBytes = cred.secret_token_enc instanceof Uint8Array ? cred.secret_token_enc : new Uint8Array(cred.secret_token_enc);
+  const secretToken = await decryptAesGcm(secretBytes, c.env.KEK_V1);
+
+  let targetUrl = body.webhook_url?.trim();
+  if (!targetUrl) {
+    let webhookBase = c.env.WEBHOOK_BASE_URL;
+    const hostHeader = c.req.header('x-forwarded-host') || c.req.header('host');
+    const protoHeader = c.req.header('x-forwarded-proto') || 'https';
+    if ((!webhookBase || webhookBase.includes('bot.knm.asia')) && hostHeader && !hostHeader.includes('localhost')) {
+      webhookBase = `${protoHeader}://${hostHeader}/v1/webhook/bot`;
+    }
+    targetUrl = `${(webhookBase || 'https://bot.knm.asia/v1/webhook/bot').replace(/\/+$/, '')}/${botId}`;
+  }
+
+  const zaloClient = new ZaloBotClient(botToken);
+  try {
+    await zaloClient.setWebhook({
+      url: targetUrl,
+      secret_token: secretToken,
+    });
+    const info = await zaloClient.getWebhookInfo();
+    return c.json({ ok: true, webhook_url: targetUrl, info });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: `Đồng bộ Webhook lên Zalo thất bại: ${msg}` }, 400);
+  }
+});
+
+// 5. Get Webhook status from Zalo
+botsRouter.get('/:id/webhook-info', async (c) => {
+  const user = c.get('user');
+  const botId = c.req.param('id');
+
+  const bot = await c.env.DB.prepare('SELECT id, name FROM bots WHERE id = ? AND tenant_id = ?')
+    .bind(botId, user.tenant_id)
+    .first();
+
+  if (!bot) {
+    return c.json({ error: 'Bot not found' }, 404);
+  }
+
+  const cred = await c.env.DB.prepare('SELECT bot_token_enc FROM bot_credentials WHERE bot_id = ?')
+    .bind(botId)
+    .first<{ bot_token_enc: Uint8Array | ArrayBuffer }>();
+
+  if (!cred) {
+    return c.json({ error: 'Bot credentials missing' }, 404);
+  }
+
+  const tokenBytes = cred.bot_token_enc instanceof Uint8Array ? cred.bot_token_enc : new Uint8Array(cred.bot_token_enc);
+  const botToken = await decryptAesGcm(tokenBytes, c.env.KEK_V1);
+  const zaloClient = new ZaloBotClient(botToken);
+
+  try {
+    const info = await zaloClient.getWebhookInfo();
+    return c.json({ ok: true, info });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: `Không thể lấy thông tin Webhook từ Zalo: ${msg}` }, 400);
+  }
 });
 
 // 4. Update bot configuration

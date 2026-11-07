@@ -15,6 +15,7 @@ import {
   Smartphone,
   Sparkles,
   ShieldAlert,
+  RefreshCw,
 } from 'lucide-react';
 
 interface BotItem {
@@ -35,6 +36,7 @@ export default function BotsPage() {
   const [loading, setLoading] = useState(true);
   const [showWizard, setShowWizard] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
 
   // Wizard state
   const [botToken, setBotToken] = useState('');
@@ -108,6 +110,21 @@ export default function BotsPage() {
       await loadBots();
     } catch (err) {
       alert('Không thể xóa bot');
+    }
+  };
+
+  const handleSyncWebhook = async (bot: BotItem) => {
+    setSyncingId(bot.id);
+    try {
+      const res = await fetchApi<{ ok: boolean; webhook_url: string }>(`/v1/bots/${bot.id}/sync-webhook`, {
+        method: 'POST',
+      });
+      alert(`Đã cập nhật Webhook lên Zalo thành công!\nURL: ${res.webhook_url}`);
+      await loadBots();
+    } catch (err: unknown) {
+      alert(`Đồng bộ thất bại: ${err instanceof Error ? err.message : 'Lỗi không xác định'}`);
+    } finally {
+      setSyncingId(null);
     }
   };
 
@@ -203,34 +220,72 @@ export default function BotsPage() {
                     {new Date(bot.created_at).toLocaleDateString('vi-VN')}
                   </span>
                 </div>
+
+                {/* Webhook Address */}
+                {bot.webhook_url && (
+                  <div className="pt-2 border-t border-slate-50">
+                    <div className="flex items-center justify-between text-[11px] text-slate-500 mb-1">
+                      <span className="font-semibold text-slate-600">Webhook Zalo:</span>
+                      <button
+                        onClick={() => handleCopyWebhook(bot.webhook_url || '', bot.id)}
+                        className="text-blue-600 hover:underline flex items-center gap-1 font-medium"
+                      >
+                        {copiedId === bot.id ? (
+                          <>
+                            <Check className="h-3 w-3" /> Đã sao chép
+                          </>
+                        ) : (
+                          <>
+                            <Copy className="h-3 w-3" /> Sao chép
+                          </>
+                        )}
+                      </button>
+                    </div>
+                    <code className="block truncate text-[11px] font-mono bg-slate-50 p-1.5 rounded border border-slate-200 text-slate-600">
+                      {bot.webhook_url}
+                    </code>
+                  </div>
+                )}
               </div>
 
               {/* Action Buttons */}
               <div className="mt-6 flex items-center justify-between border-t border-slate-100 pt-4">
                 <button
-                  onClick={() => handleToggleStatus(bot)}
-                  className={`flex items-center gap-1 text-xs font-semibold ${
-                    bot.status === 'active'
-                      ? 'text-amber-600 hover:text-amber-700'
-                      : 'text-emerald-600 hover:text-emerald-700'
-                  }`}
+                  onClick={() => handleSyncWebhook(bot)}
+                  disabled={syncingId === bot.id}
+                  className="flex items-center gap-1 text-xs font-semibold text-blue-600 hover:text-blue-700 disabled:opacity-50"
+                  title="Cập nhật Webhook URL này lên hệ thống Zalo"
                 >
-                  {bot.status === 'active' ? (
-                    <>
-                      <Pause className="h-3.5 w-3.5" /> Tạm dừng
-                    </>
-                  ) : (
-                    <>
-                      <Play className="h-3.5 w-3.5" /> Kích hoạt
-                    </>
-                  )}
+                  <RefreshCw className={`h-3.5 w-3.5 ${syncingId === bot.id ? 'animate-spin' : ''}`} />
+                  {syncingId === bot.id ? 'Đang đồng bộ...' : 'Đồng bộ Webhook'}
                 </button>
-                <button
-                  onClick={() => handleDeleteBot(bot.id)}
-                  className="flex items-center gap-1 text-xs font-semibold text-red-500 hover:text-red-700"
-                >
-                  <Trash2 className="h-3.5 w-3.5" /> Xóa
-                </button>
+
+                <div className="flex items-center gap-3">
+                  <button
+                    onClick={() => handleToggleStatus(bot)}
+                    className={`flex items-center gap-1 text-xs font-semibold ${
+                      bot.status === 'active'
+                        ? 'text-amber-600 hover:text-amber-700'
+                        : 'text-emerald-600 hover:text-emerald-700'
+                    }`}
+                  >
+                    {bot.status === 'active' ? (
+                      <>
+                        <Pause className="h-3.5 w-3.5" /> Tạm dừng
+                      </>
+                    ) : (
+                      <>
+                        <Play className="h-3.5 w-3.5" /> Kích hoạt
+                      </>
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleDeleteBot(bot.id)}
+                    className="flex items-center gap-1 text-xs font-semibold text-red-500 hover:text-red-700"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" /> Xóa
+                  </button>
+                </div>
               </div>
             </div>
           ))}

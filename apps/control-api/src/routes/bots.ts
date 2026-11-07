@@ -63,14 +63,15 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
   const webhookUrl = `${webhookBase}/${botId}`;
 
   // 1.3. Auto-configure webhook with Zalo Bot Platform
+  let webhookRegistered = false;
   try {
     await zaloClient.setWebhook({
       url: webhookUrl,
       secret_token: secretToken,
     });
+    webhookRegistered = true;
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Failed to register webhook';
-    return c.json({ error: `Zalo setWebhook failed: ${message}` }, 502);
+    console.warn(`[Zalo-BaaS] Warning: setWebhook failed (URL may not be public yet):`, err instanceof Error ? err.message : err);
   }
 
   // 1.4. Encrypt sensitive credentials with master key
@@ -84,30 +85,38 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
     : null;
 
   // 1.5. Persist to D1
-  await c.env.DB.prepare(
-    `INSERT INTO bots (id, tenant_id, bot_type, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_keywords, handover_minutes, created_at)
-     VALUES (?, ?, 'zalo_bot', ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
-  )
-    .bind(
-      botId,
-      user.tenant_id,
-      botName,
-      profile.id,
-      profile.username ?? null,
-      body.system_prompt ?? null,
-      body.strict_grounding ? 1 : 0,
-      handoverKeywordsJson,
-      body.handover_minutes ?? 30,
-      now
+  try {
+    await c.env.DB.prepare(
+      `INSERT INTO bots (id, tenant_id, bot_type, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_keywords, handover_minutes, created_at)
+       VALUES (?, ?, 'zalo_bot', ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
     )
-    .run();
+      .bind(
+        botId,
+        user.tenant_id,
+        botName,
+        profile.id,
+        profile.username ?? null,
+        body.system_prompt ?? null,
+        body.strict_grounding ? 1 : 0,
+        handoverKeywordsJson,
+        body.handover_minutes ?? 30,
+        now
+      )
+      .run();
 
-  await c.env.DB.prepare(
-    `INSERT INTO bot_credentials (bot_id, tenant_id, bot_token_enc, secret_token_enc, created_at)
-     VALUES (?, ?, ?, ?, ?)`
-  )
-    .bind(botId, user.tenant_id, botTokenEnc, secretTokenEnc, now)
-    .run();
+    await c.env.DB.prepare(
+      `INSERT INTO bot_credentials (bot_id, tenant_id, bot_token_enc, secret_token_enc, created_at)
+       VALUES (?, ?, ?, ?, ?)`
+    )
+      .bind(botId, user.tenant_id, botTokenEnc, secretTokenEnc, now)
+      .run();
+  } catch (dbErr: unknown) {
+    const msg = dbErr instanceof Error ? dbErr.message : String(dbErr);
+    if (msg.includes('FOREIGN KEY')) {
+      return c.json({ error: 'Phiên đăng nhập không hợp lệ hoặc dữ liệu tổ chức chưa khớp. Vui lòng đăng xuất và đăng nhập lại.', code: 'SESSION_INVALID' }, 401);
+    }
+    return c.json({ error: `Lưu thông tin Bot thất bại: ${msg}` }, 500);
+  }
 
   // 1.6. Populate KV cache
   const cacheData: BotCacheData = {

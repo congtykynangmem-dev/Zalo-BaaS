@@ -145,29 +145,51 @@ async function nodeToWebRequest(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
   const body = req.method !== 'GET' && req.method !== 'HEAD' && chunks.length > 0 ? Buffer.concat(chunks) : undefined;
-  const protocol = req.headers['x-forwarded-proto'] || 'http';
+  const protocol = req.headers['x-forwarded-proto'] || (req.socket?.encrypted ? 'https' : 'http');
   const host = req.headers.host || `localhost:${PORT}`;
   const url = `${protocol}://${host}${req.url}`;
+
+  const headers = new Headers();
+  for (const [key, val] of Object.entries(req.headers)) {
+    if (val !== undefined && key.toLowerCase() !== 'host') {
+      if (Array.isArray(val)) {
+        for (const v of val) headers.append(key, v);
+      } else {
+        headers.set(key, val);
+      }
+    }
+  }
+
   return new Request(url, {
     method: req.method,
-    headers: req.headers,
+    headers,
     body
   });
 }
 
 // Send Web Standard Response to Node.js ServerResponse
 async function sendWebResponse(webRes, res) {
-  const headers = Object.fromEntries(webRes.headers.entries());
-  res.writeHead(webRes.status, headers);
-  if (webRes.body) {
-    const reader = webRes.body.getReader();
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      res.write(value);
+  try {
+    const arrayBuffer = await webRes.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+
+    for (const [key, value] of webRes.headers.entries()) {
+      const lower = key.toLowerCase();
+      if (lower !== 'transfer-encoding' && lower !== 'content-length') {
+        res.setHeader(key, value);
+      }
+    }
+    res.setHeader('Content-Length', buffer.length);
+    res.statusCode = webRes.status;
+    res.end(buffer);
+  } catch (err) {
+    console.error('[Zalo-BaaS] sendWebResponse error:', err);
+    if (!res.headersSent) {
+      res.statusCode = 500;
+      res.setHeader('Content-Type', 'application/json');
+      res.end(JSON.stringify({ error: err.message || 'Error writing response' }));
     }
   }
-  res.end();
 }
 
 // Start HTTP server

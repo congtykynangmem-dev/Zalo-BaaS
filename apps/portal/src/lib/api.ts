@@ -47,9 +47,18 @@ export async function fetchApi<T>(
   if (!response.ok) {
     let errorMsg = `HTTP Error ${response.status}`;
     try {
-      const errJson = await response.json();
-      if (errJson.error) {
-        errorMsg = errJson.error;
+      const text = await response.text();
+      try {
+        const errJson = JSON.parse(text);
+        if (errJson.error) {
+          errorMsg = errJson.error;
+        } else if (errJson.message) {
+          errorMsg = errJson.message;
+        }
+      } catch {
+        if (text && text.length < 250 && !text.includes('<html')) {
+          errorMsg = text;
+        }
       }
     } catch {
       // ignore

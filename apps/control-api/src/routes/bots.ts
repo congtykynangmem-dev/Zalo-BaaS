@@ -9,6 +9,27 @@ import type { Env, HonoVariables } from '../types.js';
 
 export const botsRouter = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
 
+// Helper to robustly extract bot name from Zalo getMe profile
+export function resolveBotName(profile: any, fallback = 'Zalo Bot'): string {
+  if (profile?.name && typeof profile.name === 'string' && profile.name.trim()) {
+    return profile.name.trim();
+  }
+  if (profile?.first_name && typeof profile.first_name === 'string' && profile.first_name.trim()) {
+    const last = typeof profile.last_name === 'string' ? profile.last_name.trim() : '';
+    return `${profile.first_name.trim()} ${last}`.trim();
+  }
+  if (profile?.display_name && typeof profile.display_name === 'string' && profile.display_name.trim()) {
+    return profile.display_name.trim();
+  }
+  if (profile?.title && typeof profile.title === 'string' && profile.title.trim()) {
+    return profile.title.trim();
+  }
+  if (profile?.username && typeof profile.username === 'string' && profile.username.trim()) {
+    return `@${profile.username.trim()}`;
+  }
+  return fallback;
+}
+
 // All bot management routes require auth
 botsRouter.use('*', authMiddleware);
 
@@ -21,6 +42,7 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
 
   const body = await c.req.json<{
     bot_token?: string;
+    name?: string;
     system_prompt?: string;
     strict_grounding?: boolean;
     handover_keywords?: string[];
@@ -88,7 +110,9 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
   const secretTokenEnc = await encryptAesGcm(secretToken, c.env.KEK_V1);
 
   const now = Date.now();
-  const botName = profile.name || 'Zalo Bot';
+  const botName = body.name?.trim() || resolveBotName(profile);
+  const botUsername = profile.username ? String(profile.username).replace(/^@/, '') : null;
+  const zaloBotId = String(profile.id || '');
   const handoverKeywordsJson = body.handover_keywords
     ? JSON.stringify(body.handover_keywords)
     : null;
@@ -103,8 +127,8 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
         botId,
         user.tenant_id,
         botName,
-        profile.id,
-        profile.username ?? null,
+        zaloBotId,
+        botUsername,
         body.system_prompt ?? null,
         body.strict_grounding ? 1 : 0,
         handoverKeywordsJson,
@@ -300,6 +324,63 @@ botsRouter.get('/:id/webhook-info', async (c) => {
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : String(err);
     return c.json({ error: `Không thể lấy thông tin Webhook từ Zalo: ${msg}` }, 400);
+  }
+});
+
+// 6. Sync Bot Profile directly from Zalo (Name, Username)
+botsRouter.post('/:id/sync-profile', async (c) => {
+  const user = c.get('user');
+  const botId = c.req.param('id');
+
+  const bot = await c.env.DB.prepare(
+    'SELECT id, name, zalo_bot_id, username FROM bots WHERE id = ? AND tenant_id = ?'
+  )
+    .bind(botId, user.tenant_id)
+    .first<{ id: string; name: string; zalo_bot_id: string; username: string | null }>();
+
+  if (!bot) {
+    return c.json({ error: 'Bot not found' }, 404);
+  }
+
+  const cred = await c.env.DB.prepare(
+    'SELECT bot_token_enc FROM bot_credentials WHERE bot_id = ?'
+  )
+    .bind(botId)
+    .first<{ bot_token_enc: Uint8Array | ArrayBuffer }>();
+
+  if (!cred) {
+    return c.json({ error: 'Bot credentials missing' }, 404);
+  }
+
+  const tokenBytes = cred.bot_token_enc instanceof Uint8Array ? cred.bot_token_enc : new Uint8Array(cred.bot_token_enc);
+  const botToken = await decryptAesGcm(tokenBytes, c.env.KEK_V1);
+  const zaloClient = new ZaloBotClient(botToken);
+
+  try {
+    const profile = await zaloClient.getMe();
+    const newName = resolveBotName(profile, bot.name);
+    const newUsername = profile.username ? String(profile.username).replace(/^@/, '') : bot.username;
+    const zaloBotId = String(profile.id || bot.zalo_bot_id);
+
+    await c.env.DB.prepare(
+      'UPDATE bots SET name = ?, username = ?, zalo_bot_id = ? WHERE id = ? AND tenant_id = ?'
+    )
+      .bind(newName, newUsername, zaloBotId, botId, user.tenant_id)
+      .run();
+
+    return c.json({
+      ok: true,
+      bot: {
+        id: botId,
+        name: newName,
+        username: newUsername,
+        zalo_bot_id: zaloBotId,
+      },
+      profile,
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    return c.json({ error: `Không thể đồng bộ tên từ Zalo: ${msg}` }, 400);
   }
 });
 

@@ -8,10 +8,14 @@ export interface ZaloApiResponse<T> {
 }
 
 export interface ZaloBotProfile {
-  id: string;
-  name: string;
+  id: string | number;
+  name?: string;
+  first_name?: string;
+  last_name?: string;
   username?: string;
-  is_bot: boolean;
+  display_name?: string;
+  title?: string;
+  is_bot?: boolean;
 }
 
 export interface SetWebhookOptions {

@@ -37,9 +37,11 @@ export default function BotsPage() {
   const [showWizard, setShowWizard] = useState(false);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncingProfileId, setSyncingProfileId] = useState<string | null>(null);
 
   // Wizard state
   const [botToken, setBotToken] = useState('');
+  const [customName, setCustomName] = useState('');
   const [systemPrompt, setSystemPrompt] = useState('Tư vấn thân thiện, chuyên nghiệp.');
   const [strictGrounding, setStrictGrounding] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -77,6 +79,7 @@ export default function BotsPage() {
         method: 'POST',
         body: JSON.stringify({
           bot_token: botToken,
+          name: customName.trim() || undefined,
           system_prompt: systemPrompt,
           strict_grounding: strictGrounding,
         }),
@@ -125,6 +128,22 @@ export default function BotsPage() {
       alert(`Đồng bộ thất bại: ${err instanceof Error ? err.message : 'Lỗi không xác định'}`);
     } finally {
       setSyncingId(null);
+    }
+  };
+
+  const handleSyncProfile = async (bot: BotItem) => {
+    setSyncingProfileId(bot.id);
+    try {
+      const res = await fetchApi<{ ok: boolean; bot: { name: string; username?: string } }>(
+        `/v1/bots/${bot.id}/sync-profile`,
+        { method: 'POST' }
+      );
+      alert(`Đã cập nhật tên Bot từ Zalo thành công: "${res.bot.name}"!`);
+      await loadBots();
+    } catch (err: unknown) {
+      alert(`Lấy tên từ Zalo thất bại: ${err instanceof Error ? err.message : 'Lỗi không xác định'}`);
+    } finally {
+      setSyncingProfileId(null);
     }
   };
 
@@ -191,8 +210,22 @@ export default function BotsPage() {
                     <Bot className="h-6 w-6" />
                   </div>
                   <div>
-                    <h3 className="font-bold text-slate-900">{bot.name}</h3>
-                    <p className="text-xs text-slate-400">ID: {bot.zalo_bot_id || bot.id}</p>
+                    <div className="flex items-center gap-1.5 flex-wrap">
+                      <h3 className="font-bold text-slate-900">{bot.name}</h3>
+                      <button
+                        onClick={() => handleSyncProfile(bot)}
+                        disabled={syncingProfileId === bot.id}
+                        className="text-[10px] text-blue-600 hover:text-blue-800 flex items-center gap-0.5 font-medium bg-blue-50 hover:bg-blue-100 px-1.5 py-0.5 rounded transition"
+                        title="Đồng bộ tên và username mới nhất từ Zalo"
+                      >
+                        <RefreshCw className={`h-2.5 w-2.5 ${syncingProfileId === bot.id ? 'animate-spin' : ''}`} />
+                        {syncingProfileId === bot.id ? 'Đang lấy...' : 'Lấy tên Zalo'}
+                      </button>
+                    </div>
+                    <p className="text-xs text-slate-400">
+                      ID: {bot.zalo_bot_id || bot.id}
+                      {bot.username && <span className="ml-1.5 font-medium text-blue-600">@{bot.username}</span>}
+                    </p>
                   </div>
                 </div>
                 <span
@@ -343,6 +376,19 @@ export default function BotsPage() {
 
                 {/* Connect Form */}
                 <form onSubmit={handleConnectBot} className="space-y-4">
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                      Tên gợi nhớ cho Bot (Tùy chọn - Tự động lấy tên Zalo nếu bỏ trống)
+                    </label>
+                    <input
+                      type="text"
+                      value={customName}
+                      onChange={(e) => setCustomName(e.target.value)}
+                      placeholder="Ví dụ: Gà rán Five Star - 41 Trần Phú"
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                    />
+                  </div>
+
                   <div>
                     <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
                       Dán Zalo Bot Token <span className="text-red-500">*</span>

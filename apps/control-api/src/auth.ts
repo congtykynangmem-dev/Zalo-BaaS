@@ -73,7 +73,12 @@ export async function verifyPassword(password: string, stored: string): Promise<
 
 // --- 2. JWT Sign & Verify with Web Crypto (HMAC-SHA256) ---
 function base64UrlEncode(str: string): string {
-  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const bytes = new TextEncoder().encode(str);
+  let binary = '';
+  for (let i = 0; i < bytes.length; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
 function base64UrlDecode(str: string): string {
@@ -81,7 +86,12 @@ function base64UrlDecode(str: string): string {
   while (base64.length % 4) {
     base64 += '=';
   }
-  return atob(base64);
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new TextDecoder().decode(bytes);
 }
 
 export async function signJwt(

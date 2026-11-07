@@ -28,10 +28,14 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
   }>();
 
   if (!body.bot_token || body.bot_token.trim() === '') {
-    return c.json({ error: 'bot_token is required' }, 400);
+    return c.json({ error: 'Vui lòng dán chuỗi Zalo Bot Token' }, 400);
   }
 
-  const botToken = body.bot_token.trim();
+  // Tự động làm sạch token: loại bỏ khoảng trắng, dấu ngoặc kép/đơn bao quanh, tiền tố 'bot'
+  let botToken = body.bot_token.trim().replace(/^['"`\s]+|['"`\s]+$/g, '');
+  if (botToken.toLowerCase().startsWith('bot') && botToken.includes(':')) {
+    botToken = botToken.substring(3);
+  }
 
   // 1.1. Test and verify bot token with Zalo Bot Platform
   const zaloClient = new ZaloBotClient(botToken);
@@ -39,8 +43,13 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
   try {
     profile = await zaloClient.getMe();
   } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Invalid Bot Token';
-    return c.json({ error: `Failed to verify Zalo Bot Token: ${message}` }, 400);
+    let message = err instanceof Error ? err.message : 'Invalid Bot Token';
+    if (message.toLowerCase().includes('unauthorized') || message.includes('401')) {
+      message = 'Zalo từ chối xác thực token này (401 Unauthorized). Vui lòng mở lại mini-app "Zalo Bot Creator" trên Zalo để sao chép chuỗi Bot Token mới nhất.';
+    } else if (message.toLowerCase().includes('not found') || message.includes('404')) {
+      message = 'Không tìm thấy bot trên Zalo (404 Not Found). Vui lòng kiểm tra lại token đã sao chép đủ các ký tự chưa.';
+    }
+    return c.json({ error: `Xác minh Bot thất bại: ${message}` }, 400);
   }
 
   // 1.2. Generate unique identifiers and security secret

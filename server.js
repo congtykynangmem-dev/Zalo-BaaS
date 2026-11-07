@@ -224,9 +224,13 @@ const server = http.createServer(async (req, res) => {
       } catch (apiErr) {
         console.error(`[Zalo-BaaS] API Error:`, apiErr);
         res.writeHead(500, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ error: 'Internal Server Error' }));
+        res.end(JSON.stringify({ error: apiErr.message || 'Internal Server Error' }));
         return;
       }
+    } else {
+      res.writeHead(503, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: 'Control API chưa sẵn sàng. Vui lòng kiểm tra lại quá trình khởi động máy chủ.' }));
+      return;
     }
   }
 

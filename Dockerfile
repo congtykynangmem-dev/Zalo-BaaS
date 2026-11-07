@@ -24,6 +24,9 @@ RUN pnpm install --frozen-lockfile
 # Copy all source files
 COPY . .
 
+# Build internal shared packages first
+RUN pnpm --filter "./packages/**" run build
+
 # Build Control API and Portal
 RUN cd apps/control-api && npx tsc
 RUN cd apps/portal && npx next build

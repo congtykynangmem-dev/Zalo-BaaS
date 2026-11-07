@@ -34,6 +34,38 @@ function initDatabase() {
       db.exec(fs.readFileSync(m2Path, 'utf8'));
     }
 
+    // Auto-migrate documents table to make bot_id nullable for global tenant knowledge
+    try {
+      const docCols = db.prepare('PRAGMA table_info(documents)').all();
+      const botCol = docCols.find((c) => c.name === 'bot_id');
+      if (botCol && botCol.notnull === 1) {
+        db.exec('PRAGMA foreign_keys = OFF;');
+        db.exec(`
+          CREATE TABLE documents_temp (
+            id TEXT PRIMARY KEY,
+            tenant_id TEXT NOT NULL,
+            bot_id TEXT REFERENCES bots(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            source_type TEXT NOT NULL DEFAULT 'upload',
+            r2_key TEXT NOT NULL,
+            size_bytes INTEGER NOT NULL,
+            status TEXT NOT NULL DEFAULT 'pending',
+            chunk_count INTEGER NOT NULL DEFAULT 0,
+            error TEXT,
+            created_at INTEGER NOT NULL
+          );
+          INSERT INTO documents_temp SELECT * FROM documents;
+          DROP TABLE documents;
+          ALTER TABLE documents_temp RENAME TO documents;
+          CREATE INDEX IF NOT EXISTS idx_docs_bot ON documents(tenant_id, bot_id);
+        `);
+        db.exec('PRAGMA foreign_keys = ON;');
+        console.log('[Zalo-BaaS] Migrated documents table to support flexible bot_id (global/bot-specific)');
+      }
+    } catch (migErr) {
+      console.warn('[Zalo-BaaS] Migration check notice:', migErr.message);
+    }
+
     // D1 interface wrapper
     d1Database = {
       prepare(sql) {

@@ -66,7 +66,7 @@ CREATE TABLE IF NOT EXISTS bot_credentials (
 CREATE TABLE IF NOT EXISTS documents (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
-  bot_id TEXT NOT NULL REFERENCES bots(id) ON DELETE CASCADE,
+  bot_id TEXT REFERENCES bots(id) ON DELETE CASCADE,
   title TEXT NOT NULL,
   source_type TEXT NOT NULL DEFAULT 'upload', -- upload | gdrive | url
   r2_key TEXT NOT NULL,
@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS idx_docs_bot ON documents(tenant_id, bot_id);
 CREATE TABLE IF NOT EXISTS chunks (
   id TEXT PRIMARY KEY,
   tenant_id TEXT NOT NULL,
-  bot_id TEXT NOT NULL,
+  bot_id TEXT,
   doc_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   ord INTEGER NOT NULL,
   content TEXT NOT NULL,

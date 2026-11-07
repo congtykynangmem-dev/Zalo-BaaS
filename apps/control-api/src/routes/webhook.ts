@@ -180,7 +180,11 @@ webhookRouter.post('/bot/:botId', async (c) => {
           }));
           const matches = filterMatches(
             candidateMatches.filter(
-              (m) => m.metadata?.tenant_id === bot.tenant_id && m.metadata?.bot_id === bot.id
+              (m) =>
+                m.metadata?.tenant_id === bot.tenant_id &&
+                (m.metadata?.bot_id === bot.id ||
+                  m.metadata?.bot_id === 'all' ||
+                  !m.metadata?.bot_id)
             )
           );
           relevantChunks = matches.map((m: any) => ({

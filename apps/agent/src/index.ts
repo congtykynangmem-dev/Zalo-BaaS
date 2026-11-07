@@ -319,12 +319,14 @@ export async function processInboundMessage(
         metadata: m.metadata as VectorMatch['metadata'],
       }));
 
-      // Filter matches by tenant, bot and similarity threshold
+      // Filter matches by tenant, bot and similarity threshold (matches both dedicated and global tenant docs)
       const matched = filterMatches(
         candidateMatches.filter(
           (m) =>
             m.metadata?.tenant_id === payload.tenant_id &&
-            m.metadata?.bot_id === payload.bot_id
+            (m.metadata?.bot_id === payload.bot_id ||
+              m.metadata?.bot_id === 'all' ||
+              !m.metadata?.bot_id)
         )
       );
 

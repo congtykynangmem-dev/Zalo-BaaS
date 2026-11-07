@@ -1,0 +1,25 @@
+name = "zalo-baas-control-api"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "dev"
+JWT_SECRET = "super_secret_jwt_key_for_zalo_baas_portal_dev"
+KEK_V1 = "mock_kek_v1_base64_for_dev_32b_AAAAAAAAAAAAAAAAAAAAAAAAAAA="
+GEMINI_API_KEY = "mock_gemini_api_key_for_dev"
+WEBHOOK_BASE_URL = "https://bot.knm.asia/v1/webhook/bot"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "zalo-baas-db"
+database_id = "mock-d1-db-id"
+
+[[kv_namespaces]]
+binding = "KV_CACHE"
+id = "mock-kv-cache-id"
+
+[[vectorize]]
+binding = "VECTORS"
+index_name = "zalo-baas-vectors"
+

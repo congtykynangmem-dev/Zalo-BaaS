@@ -1,0 +1,17 @@
+{
+  "name": "zalo-baas",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Zalo Bot-as-a-Service (BaaS) - Multi-tenant Cloudflare Edge Platform",
+  "scripts": {
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test && vitest run tests/",
+    "lint": "pnpm -r run lint",
+    "format": "prettier --write \"**/*.{ts,tsx,js,json,md}\""
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4"
+  }
+}

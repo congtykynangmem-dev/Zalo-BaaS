@@ -1,0 +1,16 @@
+name = "zalo-baas-gateway"
+main = "src/index.ts"
+compatibility_date = "2024-11-01"
+compatibility_flags = ["nodejs_compat"]
+
+[vars]
+ENVIRONMENT = "dev"
+
+[[kv_namespaces]]
+binding = "KV_CACHE"
+id = "mock-kv-cache-id"
+
+[[queues.producers]]
+queue = "q_inbound"
+binding = "Q_INBOUND"
+

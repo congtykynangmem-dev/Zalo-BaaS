@@ -1,0 +1,27 @@
+{
+  "name": "@zalo-baas/control-api",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./src/index.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "wrangler dev",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@zalo-baas/crypto": "workspace:*",
+    "@zalo-baas/llm": "workspace:*",
+    "@zalo-baas/rag": "workspace:*",
+    "@zalo-baas/shared": "workspace:*",
+    "@zalo-baas/zalo-bot-sdk": "workspace:*",
+    "hono": "^4.6.10",
+    "nanoid": "^5.0.8"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20241106.0",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.4",
+    "wrangler": "^3.86.0"
+  }
+}
+

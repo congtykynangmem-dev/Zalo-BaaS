@@ -104,6 +104,38 @@ function initDatabase() {
         db.exec('PRAGMA foreign_keys = ON;');
         console.log('[Zalo-BaaS] Migrated documents table to support flexible bot_id (global/bot-specific)');
       }
+
+      // Ensure System Tenant exists for Platform Owner
+      db.exec(`
+        INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
+        VALUES ('tenant_system', 'Hệ thống Quản trị Zalo BaaS', 'enterprise', 'active', 'admin@zalobaas.com', 1700000000000);
+      `);
+
+      // Seed Platform Owner (Super Admin) account
+      const crypto = require('crypto');
+      const adminEmail = (process.env.ADMIN_EMAIL || 'admin@zalobaas.com').toLowerCase().trim();
+      const adminPassword = process.env.ADMIN_PASSWORD || 'Admin@123456';
+      const salt = crypto.randomBytes(16);
+      const derived = crypto.pbkdf2Sync(adminPassword, salt, 100000, 32, 'sha256');
+      const passwordHash = salt.toString('hex') + ':' + derived.toString('hex');
+      const now = Date.now();
+
+      const existingAdmin = db.prepare('SELECT id, email, role FROM users WHERE email = ?').get(adminEmail);
+      if (!existingAdmin) {
+        db.prepare(`
+          INSERT INTO users (id, tenant_id, email, password_hash, role, status, created_at)
+          VALUES (?, 'tenant_system', ?, ?, 'platform_owner', 'active', ?)
+        `).run(`usr_admin_${now}`, adminEmail, passwordHash, now);
+        console.log(`[Zalo-BaaS] Seeded Platform Owner account: ${adminEmail}`);
+      } else if (existingAdmin.role !== 'platform_owner') {
+        db.prepare("UPDATE users SET role = 'platform_owner' WHERE id = ?").run(existingAdmin.id);
+        console.log(`[Zalo-BaaS] Upgraded ${adminEmail} to platform_owner`);
+      }
+
+      // Also ensure existing admin accounts (like testbot@gmail.com) have platform_owner role
+      try {
+        db.prepare("UPDATE users SET role = 'platform_owner' WHERE email = 'testbot@gmail.com'").run();
+      } catch {}
     } catch (migErr) {
       console.warn('[Zalo-BaaS] Migration check notice:', migErr.message);
     }

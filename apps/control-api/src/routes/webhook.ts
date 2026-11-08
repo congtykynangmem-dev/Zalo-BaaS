@@ -273,11 +273,50 @@ webhookRouter.post('/bot/:botId', async (c) => {
         botReply = res.text;
       }
     } catch (aiErr: any) {
-      console.warn('[Webhook] Gemini generation warning:', aiErr?.message);
-      // Graceful fallback to most relevant chunk if AI call fails
-      if (relevantChunks.length > 0) {
-        const bestChunk = relevantChunks[0];
-        botReply = `Xin chào ${displayName}! Em xin gửi thông tin từ tài liệu quán:\n\n${bestChunk.content}`;
+      console.error('[Webhook] Gemini generation warning/error:', aiErr?.message, aiErr);
+
+      // Intelligent Fallback: rank chunks by keyword relevance instead of picking chunk 0
+      const queryLower = safeText.toLowerCase();
+      const tokens = queryLower.split(/\s+/).filter((w) => w.length > 1);
+
+      const candidateList = relevantChunks.length > 0 ? relevantChunks : dbChunks;
+      let bestChunk = candidateList[0];
+      let maxScore = -1;
+
+      for (const chk of candidateList) {
+        let score = 0;
+        const textLower = (chk.title + ' ' + chk.content).toLowerCase();
+
+        for (const t of tokens) {
+          if (textLower.includes(t)) score += 2;
+        }
+
+        // Semantic keyword boosting
+        if ((queryLower.includes('giá') || queryLower.includes('bao nhiêu') || queryLower.includes('tiền')) &&
+            (textLower.includes('bảng giá') || textLower.includes('đơn vị: vnđ') || textLower.includes('đ') || textLower.includes('000đ') || textLower.includes('giá:'))) {
+          score += 10;
+        }
+        if ((queryLower.includes('thực đơn') || queryLower.includes('menu') || queryLower.includes('món')) &&
+            (textLower.includes('thực đơn') || textLower.includes('menu') || textLower.includes('gà giòn') || textLower.includes('cánh gà'))) {
+          score += 10;
+        }
+        if ((queryLower.includes('địa chỉ') || queryLower.includes('ở đâu') || queryLower.includes('quán ở')) &&
+            (textLower.includes('địa chỉ') || textLower.includes('trần phú') || textLower.includes('vĩnh long') || textLower.includes('maps'))) {
+          score += 10;
+        }
+        if ((queryLower.includes('giờ') || queryLower.includes('mở cửa') || queryLower.includes('đóng cửa')) &&
+            (textLower.includes('giờ mở cửa') || textLower.includes('08:00') || textLower.includes('21:00'))) {
+          score += 10;
+        }
+
+        if (score > maxScore) {
+          maxScore = score;
+          bestChunk = chk;
+        }
+      }
+
+      if (bestChunk) {
+        botReply = `Xin chào ${displayName}! Em là ${bot.name}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${bestChunk.content}`;
       } else {
         botReply = `Xin chào ${displayName}! Em đã nhận được tin nhắn của bạn. Em sẽ phản hồi bạn ngay ạ.`;
       }
@@ -285,15 +324,24 @@ webhookRouter.post('/bot/:botId', async (c) => {
   } else {
     // If Gemini API Key is not set yet in Portal or Environment
     if (dbChunks.length > 0) {
-      // Find chunk with highest keyword match
-      const tokens = safeText.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+      const queryLower = safeText.toLowerCase();
+      const tokens = queryLower.split(/\s+/).filter((w) => w.length > 1);
       let bestChunk = dbChunks[0];
       let maxScore = -1;
+
       for (const chk of dbChunks) {
         let score = 0;
-        const text = (chk.title + ' ' + chk.content).toLowerCase();
+        const textLower = (chk.title + ' ' + chk.content).toLowerCase();
         for (const t of tokens) {
-          if (text.includes(t)) score++;
+          if (textLower.includes(t)) score += 2;
+        }
+        if ((queryLower.includes('giá') || queryLower.includes('bao nhiêu') || queryLower.includes('tiền')) &&
+            (textLower.includes('bảng giá') || textLower.includes('đơn vị: vnđ') || textLower.includes('đ') || textLower.includes('000đ') || textLower.includes('giá:'))) {
+          score += 10;
+        }
+        if ((queryLower.includes('thực đơn') || queryLower.includes('menu') || queryLower.includes('món')) &&
+            (textLower.includes('thực đơn') || textLower.includes('menu') || textLower.includes('gà giòn') || textLower.includes('cánh gà'))) {
+          score += 10;
         }
         if (score > maxScore) {
           maxScore = score;
@@ -302,7 +350,7 @@ webhookRouter.post('/bot/:botId', async (c) => {
       }
 
       if (maxScore > 0 || dbChunks.length === 1) {
-        botReply = `Xin chào ${displayName}! Em là ${bot.name}.\n\nThông tin từ tài liệu của quán:\n${bestChunk.content}\n\n(💡 Mẹo: Quản trị viên có thể vào Portal mục 'Kho Tri thức' -> bấm 'Cấu hình Gemini AI' để Bot đàm thoại thông minh và linh hoạt hơn nữa ạ!)`;
+        botReply = `Xin chào ${displayName}! Em là ${bot.name}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${bestChunk.content}\n\n(💡 Mẹo: Quản trị viên có thể vào Portal mục 'Kho Tri thức' -> bấm 'Cấu hình Gemini AI' để Bot đàm thoại mượt mà và tự nhiên hơn nữa ạ!)`;
       } else {
         botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được câu hỏi "${safeText}". Hiện tại quán có đầy đủ thực đơn và bảng giá, bạn vui lòng hỏi cụ thể món hoặc giá để em hỗ trợ nhanh nhất nhé!`;
       }

@@ -32,72 +32,95 @@ export class GeminiClient {
   }
 
   /**
-   * Generates text response using Gemini (defaults to gemini-2.5-flash).
+   * Generates text response using Gemini with automatic fallback to stable models.
    */
   async generateContent(options: GenerateOptions): Promise<GenerateResult> {
-    const model = options.model ?? 'gemini-2.5-flash';
-    const url = `${this.baseUrl}/models/${model}:generateContent?key=${this.apiKey}`;
+    const candidateModels = options.model
+      ? [options.model]
+      : ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
 
-    const bodyPayload: Record<string, unknown> = {
-      contents: options.messages,
-      generationConfig: {
-        temperature: options.temperature ?? 0.3,
-        maxOutputTokens: options.maxOutputTokens ?? 1000,
-      },
-    };
+    let lastError: Error | null = null;
 
-    if (options.systemInstruction) {
-      bodyPayload.system_instruction = {
-        parts: [{ text: options.systemInstruction }],
+    for (let i = 0; i < candidateModels.length; i++) {
+      const model = candidateModels[i];
+      const url = `${this.baseUrl}/models/${model}:generateContent?key=${this.apiKey}`;
+
+      const bodyPayload: Record<string, unknown> = {
+        contents: options.messages,
+        generationConfig: {
+          temperature: options.temperature ?? 0.3,
+          maxOutputTokens: options.maxOutputTokens ?? 1000,
+        },
       };
-    }
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(bodyPayload),
-    });
-
-    if (!response.ok) {
-      let errorMsg = `Gemini API HTTP Error ${response.status}: ${response.statusText}`;
-      try {
-        const errorJson = (await response.json()) as { error?: { message?: string } };
-        if (errorJson.error?.message) {
-          errorMsg = errorJson.error.message;
-        }
-      } catch {
-        // ignore parse error
-      }
-      throw new GeminiApiError(errorMsg, response.status);
-    }
-
-    const data = (await response.json()) as {
-      candidates?: Array<{
-        content?: {
-          parts?: Array<{ text?: string }>;
+      if (options.systemInstruction) {
+        bodyPayload.system_instruction = {
+          parts: [{ text: options.systemInstruction }],
         };
-      }>;
-      usageMetadata?: {
-        promptTokenCount?: number;
-        candidatesTokenCount?: number;
-      };
-    };
+      }
 
-    const firstCandidate = data.candidates?.[0];
-    const text =
-      firstCandidate?.content?.parts
-        ?.map((p) => p.text ?? '')
-        .join('')
-        .trim() ?? '';
+      try {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(bodyPayload),
+        });
 
-    return {
-      text,
-      tokensIn: data.usageMetadata?.promptTokenCount ?? 0,
-      tokensOut: data.usageMetadata?.candidatesTokenCount ?? 0,
-      model,
-    };
+        if (!response.ok) {
+          let errorMsg = `Gemini API HTTP Error ${response.status}: ${response.statusText}`;
+          try {
+            const errorJson = (await response.json()) as { error?: { message?: string } };
+            if (errorJson.error?.message) {
+              errorMsg = errorJson.error.message;
+            }
+          } catch {
+            // ignore parse error
+          }
+          console.warn(`[GeminiClient] Model ${model} returned error (${response.status}): ${errorMsg}`);
+          throw new GeminiApiError(errorMsg, response.status);
+        }
+
+        const data = (await response.json()) as {
+          candidates?: Array<{
+            content?: {
+              parts?: Array<{ text?: string }>;
+            };
+          }>;
+          usageMetadata?: {
+            promptTokenCount?: number;
+            candidatesTokenCount?: number;
+          };
+        };
+
+        const firstCandidate = data.candidates?.[0];
+        const text =
+          firstCandidate?.content?.parts
+            ?.map((p) => p.text ?? '')
+            .join('')
+            .trim() ?? '';
+
+        return {
+          text,
+          tokensIn: data.usageMetadata?.promptTokenCount ?? 0,
+          tokensOut: data.usageMetadata?.candidatesTokenCount ?? 0,
+          model,
+        };
+      } catch (err: any) {
+        lastError = err;
+        // Do not retry different models if API Key is definitively invalid
+        if (err.status === 401 || err.status === 403 || err.message?.includes('API_KEY_INVALID')) {
+          throw err;
+        }
+        if (i < candidateModels.length - 1) {
+          console.info(`[GeminiClient] Retrying with fallback model: ${candidateModels[i + 1]}`);
+          continue;
+        }
+      }
+    }
+
+    throw lastError || new GeminiApiError('Failed to generate content with any Gemini model');
   }
 
   /**

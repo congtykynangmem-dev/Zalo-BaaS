@@ -76,3 +76,4 @@ settingsRouter.post('/ai', requireRole(['tenant_admin', 'platform_owner']), asyn
     return c.json({ error: `Lưu cấu hình thất bại: ${msg}` }, 500);
   }
 });
+

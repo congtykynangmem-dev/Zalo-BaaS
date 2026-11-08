@@ -36,6 +36,15 @@ function initDatabase() {
 
     // Auto-migrate documents table to make bot_id nullable for global tenant knowledge
     try {
+      // Ensure tenant_settings table exists
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS tenant_settings (
+          tenant_id TEXT PRIMARY KEY REFERENCES tenants(id) ON DELETE CASCADE,
+          gemini_api_key TEXT,
+          updated_at INTEGER
+        );
+      `);
+
       const docCols = db.prepare('PRAGMA table_info(documents)').all();
       const botCol = docCols.find((c) => c.name === 'bot_id');
       if (botCol && botCol.notnull === 1) {
@@ -117,13 +126,46 @@ const kvCache = {
   }
 };
 
-// Fallback Vectorize
+// In-Memory Vector Store with Cosine Similarity for standalone container
+const memoryVectors = new Map();
+
+function cosineSimilarity(vecA, vecB) {
+  if (!vecA || !vecB || vecA.length !== vecB.length) return 0;
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+  for (let i = 0; i < vecA.length; i++) {
+    dotProduct += vecA[i] * vecB[i];
+    normA += vecA[i] * vecA[i];
+    normB += vecB[i] * vecB[i];
+  }
+  if (normA === 0 || normB === 0) return 0;
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
 const vectorIndex = {
-  async query() {
-    return { matches: [] };
+  async upsert(records) {
+    if (Array.isArray(records)) {
+      for (const rec of records) {
+        if (rec && rec.id && rec.values) {
+          memoryVectors.set(rec.id, { values: rec.values, metadata: rec.metadata || {} });
+        }
+      }
+    }
   },
-  async insert() {},
-  async upsert() {}
+  async insert(records) {
+    return this.upsert(records);
+  },
+  async query(queryVector, options = {}) {
+    const topK = options.topK || 5;
+    const matches = [];
+    for (const [id, rec] of memoryVectors.entries()) {
+      const score = cosineSimilarity(queryVector, rec.values);
+      matches.push({ id, score, metadata: rec.metadata });
+    }
+    matches.sort((a, b) => b.score - a.score);
+    return { matches: matches.slice(0, topK) };
+  }
 };
 
 // Control API Environment

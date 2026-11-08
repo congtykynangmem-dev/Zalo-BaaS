@@ -17,6 +17,9 @@ import {
   X,
   FileCode,
   FileSpreadsheet,
+  Sparkles,
+  Key,
+  ExternalLink,
 } from 'lucide-react';
 
 interface BotItem {
@@ -54,7 +57,69 @@ export default function KnowledgePage() {
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
 
+  // AI Configuration state
+  const [aiConfigured, setAiConfigured] = useState(false);
+  const [aiMaskedKey, setAiMaskedKey] = useState('');
+  const [aiSource, setAiSource] = useState<'tenant_custom' | 'system_env' | 'none'>('none');
+  const [showAiModal, setShowAiModal] = useState(false);
+  const [aiKeyInput, setAiKeyInput] = useState('');
+  const [savingAiKey, setSavingAiKey] = useState(false);
+  const [aiError, setAiError] = useState('');
+  const [aiSuccess, setAiSuccess] = useState('');
+
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Load AI configuration status
+  const loadAiSettings = async () => {
+    try {
+      const res = await fetchApi<{
+        configured: boolean;
+        masked_key: string;
+        source: 'tenant_custom' | 'system_env' | 'none';
+      }>('/v1/settings/ai');
+      setAiConfigured(Boolean(res.configured));
+      setAiMaskedKey(res.masked_key || '');
+      setAiSource(res.source || 'none');
+    } catch (err) {
+      console.warn('Failed to load AI settings:', err);
+    }
+  };
+
+  useEffect(() => {
+    loadAiSettings();
+  }, []);
+
+  const handleSaveAiKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!aiKeyInput.trim()) {
+      setAiError('Vui lòng nhập Gemini API Key');
+      return;
+    }
+    setSavingAiKey(true);
+    setAiError('');
+    setAiSuccess('');
+    try {
+      const res = await fetchApi<{ ok: boolean; masked_key: string }>('/v1/settings/ai', {
+        method: 'POST',
+        body: JSON.stringify({ gemini_api_key: aiKeyInput.trim() }),
+      });
+      if (res.ok) {
+        setAiConfigured(true);
+        setAiMaskedKey(res.masked_key);
+        setAiSource('tenant_custom');
+        setAiSuccess('Đã lưu cấu hình Gemini AI thành công! Zalo Bot đã sẵn sàng đàm thoại thông minh.');
+        setAiKeyInput('');
+        setTimeout(() => {
+          setShowAiModal(false);
+          setAiSuccess('');
+        }, 1500);
+      }
+    } catch (err: any) {
+      setAiError(err.message || 'Lưu API Key thất bại');
+    } finally {
+      setSavingAiKey(false);
+    }
+  };
 
   // 1. Load list of bots
   useEffect(() => {
@@ -216,6 +281,27 @@ export default function KnowledgePage() {
               ))}
             </select>
           </div>
+
+          {/* AI Settings Quick Action */}
+          <button
+            onClick={() => {
+              setShowAiModal(true);
+              setAiError('');
+              setAiSuccess('');
+            }}
+            className={`flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-semibold transition border shadow-sm ${
+              aiConfigured
+                ? 'bg-emerald-50 text-emerald-800 border-emerald-300 hover:bg-emerald-100'
+                : 'bg-amber-50 text-amber-900 border-amber-300 hover:bg-amber-100 ring-2 ring-amber-400/40 animate-pulse'
+            }`}
+          >
+            <Sparkles className={`h-4 w-4 ${aiConfigured ? 'text-emerald-600' : 'text-amber-600'}`} />
+            <span>
+              {aiConfigured
+                ? `Gemini AI: Đã kết nối (${aiMaskedKey})`
+                : '⚡ Cấu hình Gemini AI'}
+            </span>
+          </button>
 
           <button
             onClick={() => {
@@ -546,6 +632,122 @@ export default function KnowledgePage() {
                   ) : (
                     <>
                       <CheckCircle2 className="h-3.5 w-3.5" /> Lưu & Vectorize
+                    </>
+                  )}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- GEMINI AI CONFIGURATION MODAL --- */}
+      {showAiModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-lg rounded-2xl bg-white p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 text-white shadow-sm">
+                  <Sparkles className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Cấu hình Google Gemini AI
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Kích hoạt mô hình AI đọc hiểu Kho Tri thức cho Zalo Bot
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowAiModal(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Current Status Badge */}
+            <div className="mb-4 rounded-xl p-3 bg-slate-50 border border-slate-200 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="text-slate-600 font-medium">Trạng thái hiện tại:</span>
+                {aiConfigured ? (
+                  <span className="inline-flex items-center gap-1 font-semibold text-emerald-700 bg-emerald-100/70 px-2 py-0.5 rounded-md">
+                    <CheckCircle2 className="h-3 w-3" /> Đã kết nối ({aiMaskedKey})
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1 font-semibold text-amber-700 bg-amber-100/70 px-2 py-0.5 rounded-md">
+                    <AlertCircle className="h-3 w-3" /> Chưa cài đặt
+                  </span>
+                )}
+              </div>
+            </div>
+
+            {aiError && (
+              <div className="mb-4 rounded-xl bg-red-50 p-3 text-xs text-red-600 border border-red-100 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{aiError}</span>
+              </div>
+            )}
+
+            {aiSuccess && (
+              <div className="mb-4 rounded-xl bg-emerald-50 p-3 text-xs text-emerald-700 border border-emerald-200 flex items-center gap-2 font-medium">
+                <CheckCircle2 className="h-4 w-4 shrink-0" />
+                <span>{aiSuccess}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveAiKey} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5 flex items-center justify-between">
+                  <span>Gemini API Key <span className="text-red-500">*</span></span>
+                  <a
+                    href="https://aistudio.google.com/app/apikey"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-blue-600 hover:text-blue-800 font-semibold inline-flex items-center gap-1 normal-case tracking-normal"
+                  >
+                    <span>Lấy Key miễn phí tại Google AI Studio</span>
+                    <ExternalLink className="h-3 w-3" />
+                  </a>
+                </label>
+                <div className="relative">
+                  <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-400">
+                    <Key className="h-4 w-4" />
+                  </div>
+                  <input
+                    type="password"
+                    value={aiKeyInput}
+                    onChange={(e) => setAiKeyInput(e.target.value)}
+                    placeholder={aiConfigured ? `Đã có key (${aiMaskedKey}) - Nhập key mới nếu muốn đổi` : 'Dán chuỗi API Key bắt đầu bằng AIzaSy...'}
+                    className="w-full rounded-xl border border-slate-200 pl-9 pr-3 py-2.5 text-xs font-mono focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                  />
+                </div>
+                <p className="mt-1.5 text-[11px] text-slate-500 leading-relaxed">
+                  💡 API Key này sẽ được dùng để vector hóa tài liệu RAG và giúp Bot trả lời tự nhiên theo đúng thực đơn, bảng giá và chính sách của quán.
+                </p>
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setShowAiModal(false)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                >
+                  Đóng
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingAiKey}
+                  className="rounded-xl bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition flex items-center gap-2"
+                >
+                  {savingAiKey ? (
+                    <>
+                      <Clock className="h-3.5 w-3.5 animate-spin" /> Đang lưu...
+                    </>
+                  ) : (
+                    <>
+                      <CheckCircle2 className="h-3.5 w-3.5" /> Lưu & Kích hoạt AI
                     </>
                   )}
                 </button>

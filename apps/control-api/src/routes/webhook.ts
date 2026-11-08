@@ -162,43 +162,100 @@ webhookRouter.post('/bot/:botId', async (c) => {
     return c.json({ ok: true, handover: true });
   }
 
-  // 10. Generate AI Response
+  // 10. Generate AI & Knowledge Response
   let botReply = '';
-  if (c.env.GEMINI_API_KEY && c.env.GEMINI_API_KEY.trim()) {
-    try {
-      const geminiClient = new GeminiClient(c.env.GEMINI_API_KEY);
-      let relevantChunks: Array<{ title: string; content: string; score: number }> = [];
 
-      if (c.env.VECTORS && safeText) {
-        try {
-          const embedResult = await geminiClient.embedContent({ text: safeText });
-          const qRes = await c.env.VECTORS.query(embedResult.values, { topK: 5, returnMetadata: 'all' });
-          const candidateMatches: VectorMatch[] = (qRes.matches || []).map((m: any) => ({
-            id: m.id,
-            score: m.score,
-            metadata: m.metadata as VectorMatch['metadata'],
-          }));
-          const matches = filterMatches(
-            candidateMatches.filter(
-              (m) =>
-                m.metadata?.tenant_id === bot.tenant_id &&
-                (m.metadata?.bot_id === bot.id ||
-                  m.metadata?.bot_id === 'all' ||
-                  !m.metadata?.bot_id)
-            )
-          );
-          relevantChunks = matches.map((m: any) => ({
-            title: m.metadata?.title || 'Tài liệu',
-            content: m.metadata?.content || '',
-            score: m.score,
-          }));
-        } catch (vecErr) {
-          console.warn('[Webhook] Vector query warning:', vecErr);
-        }
+  // 10.1 Resolve active Gemini API key (Tenant custom key prioritized over system env)
+  let activeGeminiKey = c.env.GEMINI_API_KEY || '';
+  try {
+    const keyRow = await c.env.DB.prepare(
+      'SELECT gemini_api_key FROM tenant_settings WHERE tenant_id = ?'
+    )
+      .bind(bot.tenant_id)
+      .first<{ gemini_api_key: string }>();
+    if (keyRow?.gemini_api_key && keyRow.gemini_api_key.trim()) {
+      activeGeminiKey = keyRow.gemini_api_key.trim();
+    }
+  } catch {}
+
+  // 10.2 Retrieve knowledge chunks directly from SQLite for 100% recall
+  let dbChunks: Array<{ id: string; title: string; content: string }> = [];
+  try {
+    const chunkRows = await c.env.DB.prepare(`
+      SELECT c.id, c.content, d.title
+      FROM chunks c
+      JOIN documents d ON c.doc_id = d.id
+      WHERE c.tenant_id = ?
+        AND (c.bot_id = ? OR c.bot_id IS NULL OR c.bot_id = '' OR c.bot_id = 'all')
+        AND d.status = 'ready'
+      ORDER BY d.created_at DESC, c.ord ASC
+    `)
+      .bind(bot.tenant_id, bot.id)
+      .all<{ id: string; content: string; title: string }>();
+
+    if (chunkRows && Array.isArray(chunkRows.results)) {
+      dbChunks = chunkRows.results.filter((r) => r.content && r.content.trim());
+    }
+  } catch (dbErr) {
+    console.warn('[Webhook] SQLite chunks retrieval warning:', dbErr);
+  }
+
+  // 10.3 Knowledge selection strategy
+  let relevantChunks: Array<{ title: string; content: string; score: number }> = [];
+
+  if (dbChunks.length > 0 && dbChunks.length <= 20) {
+    // For small-medium knowledge base (<= 20 chunks), pass ALL chunks into context!
+    // Gemini 2.5 Flash has 1M context window; this guarantees 100% recall for menus, prices, and FAQs.
+    relevantChunks = dbChunks.map((c) => ({
+      title: c.title || 'Tài liệu hướng dẫn',
+      content: c.content,
+      score: 1.0,
+    }));
+  } else if (dbChunks.length > 20) {
+    // For large knowledge base (> 20 chunks), perform hybrid semantic & keyword scoring
+    let vectorMatches: Array<{ id: string; score: number }> = [];
+    if (activeGeminiKey && c.env.VECTORS && safeText) {
+      try {
+        const geminiClient = new GeminiClient(activeGeminiKey);
+        const embedResult = await geminiClient.embedContent({ text: safeText });
+        const qRes = await c.env.VECTORS.query(embedResult.values, { topK: 10, returnMetadata: 'all' });
+        vectorMatches = (qRes.matches || []).map((m: any) => ({
+          id: m.id,
+          score: m.score,
+        }));
+      } catch (vecErr) {
+        console.warn('[Webhook] Vector query warning:', vecErr);
       }
+    }
 
-      const isStrict = bot.strict_grounding === 1;
-      if (isStrict && relevantChunks.length === 0) {
+    const queryTokens = safeText.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+    const scoredChunks = dbChunks.map((chunk) => {
+      let score = 0;
+      const contentLower = (chunk.title + ' ' + chunk.content).toLowerCase();
+      for (const token of queryTokens) {
+        if (contentLower.includes(token)) score += 1;
+      }
+      const vMatch = vectorMatches.find((vm) => vm.id === chunk.id);
+      if (vMatch) score += vMatch.score * 5;
+      return { ...chunk, score };
+    });
+
+    scoredChunks.sort((a, b) => b.score - a.score);
+    relevantChunks = scoredChunks.slice(0, 10).map((c) => ({
+      title: c.title,
+      content: c.content,
+      score: c.score,
+    }));
+  }
+
+  // 10.4 Generate Response (Gemini AI or Smart Direct Knowledge Fallback)
+  const isStrict = bot.strict_grounding === 1;
+
+  if (activeGeminiKey && activeGeminiKey.trim()) {
+    try {
+      const geminiClient = new GeminiClient(activeGeminiKey);
+
+      if (isStrict && dbChunks.length === 0) {
         botReply =
           'Dạ hiện tại em chưa tìm thấy thông tin phù hợp trong tài liệu hướng dẫn. Bạn có muốn kết nối với nhân viên tư vấn để được hỗ trợ chi tiết hơn không ạ?';
       } else {
@@ -217,11 +274,41 @@ webhookRouter.post('/bot/:botId', async (c) => {
       }
     } catch (aiErr: any) {
       console.warn('[Webhook] Gemini generation warning:', aiErr?.message);
-      botReply = `Xin chào ${displayName}! Em đã nhận được tin nhắn của bạn. Em sẽ phản hồi bạn ngay ạ.`;
+      // Graceful fallback to most relevant chunk if AI call fails
+      if (relevantChunks.length > 0) {
+        const bestChunk = relevantChunks[0];
+        botReply = `Xin chào ${displayName}! Em xin gửi thông tin từ tài liệu quán:\n\n${bestChunk.content}`;
+      } else {
+        botReply = `Xin chào ${displayName}! Em đã nhận được tin nhắn của bạn. Em sẽ phản hồi bạn ngay ạ.`;
+      }
     }
   } else {
-    // If Gemini API Key not set yet, reply with friendly confirmation
-    botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được tin nhắn: "${safeText}". Hệ thống kết nối Zalo Bot đang hoạt động rất tốt!`;
+    // If Gemini API Key is not set yet in Portal or Environment
+    if (dbChunks.length > 0) {
+      // Find chunk with highest keyword match
+      const tokens = safeText.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
+      let bestChunk = dbChunks[0];
+      let maxScore = -1;
+      for (const chk of dbChunks) {
+        let score = 0;
+        const text = (chk.title + ' ' + chk.content).toLowerCase();
+        for (const t of tokens) {
+          if (text.includes(t)) score++;
+        }
+        if (score > maxScore) {
+          maxScore = score;
+          bestChunk = chk;
+        }
+      }
+
+      if (maxScore > 0 || dbChunks.length === 1) {
+        botReply = `Xin chào ${displayName}! Em là ${bot.name}.\n\nThông tin từ tài liệu của quán:\n${bestChunk.content}\n\n(💡 Mẹo: Quản trị viên có thể vào Portal mục 'Kho Tri thức' -> bấm 'Cấu hình Gemini AI' để Bot đàm thoại thông minh và linh hoạt hơn nữa ạ!)`;
+      } else {
+        botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được câu hỏi "${safeText}". Hiện tại quán có đầy đủ thực đơn và bảng giá, bạn vui lòng hỏi cụ thể món hoặc giá để em hỗ trợ nhanh nhất nhé!`;
+      }
+    } else {
+      botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được tin nhắn: "${safeText}". Hệ thống kết nối Zalo Bot đang hoạt động rất tốt!`;
+    }
   }
 
   // 11. Send reply back to Zalo

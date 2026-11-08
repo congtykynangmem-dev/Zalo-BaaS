@@ -7,6 +7,7 @@ import { documentsRouter } from './routes/documents.js';
 import { conversationsRouter } from './routes/conversations.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { webhookRouter } from './routes/webhook.js';
+import { settingsRouter } from './routes/settings.js';
 import type { Env, HonoVariables } from './types.js';
 
 export const app = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
@@ -37,6 +38,7 @@ app.get('/health', (c) => {
 app.route('/v1/auth', authRouter);
 app.route('/v1/bots', botsRouter);
 app.route('/v1/webhook', webhookRouter);
+app.route('/v1/settings', settingsRouter);
 app.route('/v1', documentsRouter);
 app.route('/v1', conversationsRouter);
 app.route('/v1/analytics', analyticsRouter);

@@ -12,6 +12,7 @@ describe('Control API Worker (apps/control-api)', () => {
   let mockDocs: Map<string, Record<string, unknown>>;
   let mockConvs: Map<string, Record<string, unknown>>;
   let mockMessages: Record<string, unknown>[];
+  let mockTenantSettings: Map<string, Record<string, unknown>>;
   let mockVectors: unknown[];
   let env: Env;
   const masterKey = generateMasterKeyBase64();
@@ -24,6 +25,7 @@ describe('Control API Worker (apps/control-api)', () => {
     mockBots = new Map();
     mockDocs = new Map();
     mockConvs = new Map();
+    mockTenantSettings = new Map();
     mockMessages = [];
     mockVectors = [];
 
@@ -31,109 +33,121 @@ describe('Control API Worker (apps/control-api)', () => {
     const mockStatement = (sql: string) => {
       const normSql = sql.replace(/\s+/g, ' ');
       let boundParams: unknown[] = [];
+      const createExec = () => ({
+        first: vi.fn(async () => {
+          if (normSql.includes('SELECT id FROM users WHERE email = ?')) {
+            const email = boundParams[0] as string;
+            return mockUsers.get(email) ?? null;
+          }
+          if (normSql.includes('FROM users u LEFT JOIN tenants t')) {
+            const email = boundParams[0] as string;
+            return mockUsers.get(email) ?? null;
+          }
+          if (normSql.includes('SELECT id, name, plan_id, status FROM tenants')) {
+            const tenantId = boundParams[0] as string;
+            return mockTenants.get(tenantId) ?? null;
+          }
+          if (normSql.includes('SELECT id FROM bots WHERE id = ?')) {
+            const botId = boundParams[0] as string;
+            return mockBots.get(botId) ?? null;
+          }
+          if (normSql.includes('SELECT id, name FROM bots WHERE id = ?')) {
+            const botId = boundParams[0] as string;
+            return mockBots.get(botId) ?? null;
+          }
+          if (normSql.includes('SELECT t.plan_id, p.name as plan_name')) {
+            return {
+              plan_id: 'starter',
+              plan_name: 'Starter',
+              monthly_ai_messages: 1000,
+              max_documents: 5,
+            };
+          }
+          if (normSql.includes('SUM(ai_messages) as total_ai_messages')) {
+            return {
+              total_ai_messages: 250,
+              total_tokens_in: 50000,
+              total_tokens_out: 15000,
+            };
+          }
+          if (normSql.includes('COUNT(*) as total_convs')) {
+            return { total_convs: 15 };
+          }
+          if (normSql.includes('COUNT(*) as total_handovers')) {
+            return { total_handovers: 3 };
+          }
+          if (normSql.includes('SELECT id, bot_id, chat_id FROM conversations')) {
+            const convId = boundParams[0] as string;
+            return mockConvs.get(convId) ?? null;
+          }
+          if (normSql.includes('SELECT bot_token_enc FROM bot_credentials')) {
+            return { bot_token_enc: new Uint8Array([1, 2, 3]) };
+          }
+          if (normSql.includes('SELECT gemini_api_key FROM tenant_settings')) {
+            const tenantId = boundParams[0] as string;
+            return mockTenantSettings.get(tenantId) ?? null;
+          }
+          return null;
+        }),
+        all: vi.fn(async () => {
+          if (normSql.includes('FROM bots WHERE tenant_id = ?')) {
+            return { results: Array.from(mockBots.values()) };
+          }
+          if (normSql.includes('FROM documents WHERE bot_id = ?')) {
+            return { results: Array.from(mockDocs.values()) };
+          }
+          if (normSql.includes('FROM conversations WHERE bot_id = ?')) {
+            return { results: Array.from(mockConvs.values()) };
+          }
+          if (normSql.includes('FROM usage_daily WHERE tenant_id = ?')) {
+            return {
+              results: [
+                { day: '2026-11-07', ai_messages: 50, tokens_in: 10000, tokens_out: 3000 },
+              ],
+            };
+          }
+          return { results: [] };
+        }),
+        run: vi.fn(async () => {
+          if (normSql.includes('INSERT INTO tenants')) {
+            const [id, name, email] = boundParams;
+            mockTenants.set(id as string, { id, name, email, plan_id: 'starter' });
+          }
+          if (normSql.includes('INSERT INTO users')) {
+            const [id, tenant_id, email, password_hash] = boundParams;
+            mockUsers.set(email as string, {
+              id,
+              tenant_id,
+              email,
+              password_hash,
+              role: 'tenant_admin',
+              status: 'active',
+              tenant_name: 'Test Tenant',
+              plan_id: 'starter',
+            });
+          }
+          if (normSql.includes('INSERT INTO bots')) {
+            const [id, tenant_id, name] = boundParams;
+            mockBots.set(id as string, { id, tenant_id, name, status: 'active' });
+          }
+          if (normSql.includes('INSERT INTO documents')) {
+            const [id, tenant_id, bot_id, title] = boundParams;
+            mockDocs.set(id as string, { id, tenant_id, bot_id, title, status: 'ready' });
+          }
+          if (normSql.includes('INSERT INTO tenant_settings')) {
+            const [tenant_id, gemini_api_key] = boundParams;
+            mockTenantSettings.set(tenant_id as string, { tenant_id, gemini_api_key });
+          }
+          return { success: true };
+        }),
+      });
+
+      const exec = createExec();
       return {
+        ...exec,
         bind: (...params: unknown[]) => {
           boundParams = params;
-          return {
-            first: vi.fn(async () => {
-              if (normSql.includes('SELECT id FROM users WHERE email = ?')) {
-                const email = boundParams[0] as string;
-                return mockUsers.get(email) ?? null;
-              }
-              if (normSql.includes('FROM users u LEFT JOIN tenants t')) {
-                const email = boundParams[0] as string;
-                return mockUsers.get(email) ?? null;
-              }
-              if (normSql.includes('SELECT id, name, plan_id, status FROM tenants')) {
-                const tenantId = boundParams[0] as string;
-                return mockTenants.get(tenantId) ?? null;
-              }
-              if (normSql.includes('SELECT id FROM bots WHERE id = ?')) {
-                const botId = boundParams[0] as string;
-                return mockBots.get(botId) ?? null;
-              }
-              if (normSql.includes('SELECT id, name FROM bots WHERE id = ?')) {
-                const botId = boundParams[0] as string;
-                return mockBots.get(botId) ?? null;
-              }
-              if (normSql.includes('SELECT t.plan_id, p.name as plan_name')) {
-                return {
-                  plan_id: 'starter',
-                  plan_name: 'Starter',
-                  monthly_ai_messages: 1000,
-                  max_documents: 5,
-                };
-              }
-              if (normSql.includes('SUM(ai_messages) as total_ai_messages')) {
-                return {
-                  total_ai_messages: 250,
-                  total_tokens_in: 50000,
-                  total_tokens_out: 15000,
-                };
-              }
-              if (normSql.includes('COUNT(*) as total_convs')) {
-                return { total_convs: 15 };
-              }
-              if (normSql.includes('COUNT(*) as total_handovers')) {
-                return { total_handovers: 3 };
-              }
-              if (normSql.includes('SELECT id, bot_id, chat_id FROM conversations')) {
-                const convId = boundParams[0] as string;
-                return mockConvs.get(convId) ?? null;
-              }
-              if (normSql.includes('SELECT bot_token_enc FROM bot_credentials')) {
-                return { bot_token_enc: new Uint8Array([1, 2, 3]) };
-              }
-              return null;
-            }),
-            all: vi.fn(async () => {
-              if (normSql.includes('FROM bots WHERE tenant_id = ?')) {
-                return { results: Array.from(mockBots.values()) };
-              }
-              if (normSql.includes('FROM documents WHERE bot_id = ?')) {
-                return { results: Array.from(mockDocs.values()) };
-              }
-              if (normSql.includes('FROM conversations WHERE bot_id = ?')) {
-                return { results: Array.from(mockConvs.values()) };
-              }
-              if (normSql.includes('FROM usage_daily WHERE tenant_id = ?')) {
-                return {
-                  results: [
-                    { day: '2026-11-07', ai_messages: 50, tokens_in: 10000, tokens_out: 3000 },
-                  ],
-                };
-              }
-              return { results: [] };
-            }),
-            run: vi.fn(async () => {
-              if (normSql.includes('INSERT INTO tenants')) {
-                const [id, name, email] = boundParams;
-                mockTenants.set(id as string, { id, name, email, plan_id: 'starter' });
-              }
-              if (normSql.includes('INSERT INTO users')) {
-                const [id, tenant_id, email, password_hash] = boundParams;
-                mockUsers.set(email as string, {
-                  id,
-                  tenant_id,
-                  email,
-                  password_hash,
-                  role: 'tenant_admin',
-                  status: 'active',
-                  tenant_name: 'Test Tenant',
-                  plan_id: 'starter',
-                });
-              }
-              if (normSql.includes('INSERT INTO bots')) {
-                const [id, tenant_id, name] = boundParams;
-                mockBots.set(id as string, { id, tenant_id, name, status: 'active' });
-              }
-              if (normSql.includes('INSERT INTO documents')) {
-                const [id, tenant_id, bot_id, title] = boundParams;
-                mockDocs.set(id as string, { id, tenant_id, bot_id, title, status: 'ready' });
-              }
-              return { success: true };
-            }),
-          };
+          return exec;
         },
       };
     };
@@ -405,5 +419,72 @@ describe('Control API Worker (apps/control-api)', () => {
     expect(statsBody.usage.is_quota_warning).toBe(false);
     expect(statsBody.counts.total_handovers).toBe(3);
     expect(statsBody.daily_breakdown.length).toBe(1);
+  });
+
+  it('manages tenant Gemini AI configuration via /v1/settings/ai', async () => {
+    // 1. Register tenant
+    const regRes = await app.request(
+      '/v1/auth/register',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: 'ai_tenant@example.com',
+          password: 'Password123!',
+          tenant_name: 'AI Test Tenant',
+        }),
+      },
+      env
+    );
+    const regData = (await regRes.json()) as { token: string };
+    const token = regData.token;
+    expect(token).toBeDefined();
+
+    // 2. Query initial AI settings (uses system_env from mock env)
+    const initRes = await app.request(
+      '/v1/settings/ai',
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      env
+    );
+    expect(initRes.status).toBe(200);
+    const initData = (await initRes.json()) as { configured: boolean; masked_key: string; source: string };
+    expect(initData.configured).toBe(true);
+    expect(initData.source).toBe('system_env');
+
+    // 3. Save new Gemini API Key
+    const saveRes = await app.request(
+      '/v1/settings/ai',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          gemini_api_key: 'AIzaSySecretCustomKey12345',
+        }),
+      },
+      env
+    );
+    expect(saveRes.status).toBe(200);
+    const saveData = (await saveRes.json()) as { ok: boolean; masked_key: string };
+    expect(saveData.ok).toBe(true);
+    expect(saveData.masked_key).toContain('...');
+
+    // 4. Verify updated AI status (now tenant_custom)
+    const checkRes = await app.request(
+      '/v1/settings/ai',
+      {
+        method: 'GET',
+        headers: { Authorization: `Bearer ${token}` },
+      },
+      env
+    );
+    const checkData = (await checkRes.json()) as { configured: boolean; masked_key: string; source: string };
+    expect(checkData.configured).toBe(true);
+    expect(checkData.source).toBe('tenant_custom');
   });
 });

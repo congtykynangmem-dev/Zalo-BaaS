@@ -8,6 +8,7 @@ build/
 .next/
 out/
 .wrangler/
+*.tsbuildinfo
 
 # Environment files & secrets
 .env
@@ -31,3 +32,6 @@ Thumbs.db
 data/*.sqlite
 data/*.db
 data/*.sqlite-*
+
+# GitHub Workflows (requires elevated workflow token scope)
+.github/

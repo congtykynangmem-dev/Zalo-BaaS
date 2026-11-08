@@ -38,8 +38,21 @@ async function ingestDocument(opts: IngestOptions) {
   // 2. Chunk text
   const chunks = chunkText(rawContent);
   const vectorRecords: VectorizeVector[] = [];
-  const hasGemini = Boolean(env.GEMINI_API_KEY && env.GEMINI_API_KEY.trim());
-  const gemini = hasGemini ? new GeminiClient(env.GEMINI_API_KEY) : null;
+
+  let activeGeminiKey = env.GEMINI_API_KEY || '';
+  try {
+    const keyRow = await env.DB.prepare(
+      'SELECT gemini_api_key FROM tenant_settings WHERE tenant_id = ?'
+    )
+      .bind(tenantId)
+      .first<{ gemini_api_key: string }>();
+    if (keyRow?.gemini_api_key && keyRow.gemini_api_key.trim()) {
+      activeGeminiKey = keyRow.gemini_api_key.trim();
+    }
+  } catch {}
+
+  const hasGemini = Boolean(activeGeminiKey && activeGeminiKey.trim());
+  const gemini = hasGemini ? new GeminiClient(activeGeminiKey) : null;
 
   try {
     for (const chunk of chunks) {

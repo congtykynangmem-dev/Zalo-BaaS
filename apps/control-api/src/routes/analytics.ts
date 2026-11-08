@@ -28,9 +28,11 @@ analyticsRouter.get('/bots/:botId/stats', async (c) => {
 
   // 1.2. Get tenant's plan quota
   const tenantRow = await c.env.DB.prepare(
-    `SELECT t.plan_id, p.name as plan_name, p.monthly_ai_messages, p.max_documents
+    `SELECT t.plan_id, COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
+            COALESCE(p.monthly_ai_messages, 1000) as monthly_ai_messages,
+            COALESCE(p.max_documents, 5) as max_documents
      FROM tenants t
-     JOIN plans p ON t.plan_id = p.id
+     LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
      WHERE t.id = ?`
   )
     .bind(tenantId)

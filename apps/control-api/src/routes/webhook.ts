@@ -9,7 +9,7 @@ import type { Env, HonoVariables } from '../types.js';
 
 export const webhookRouter = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
 
-// Helper to extract and format specific items or full menu politely
+// Helper to extract clean customer-facing information or answer specific queries
 export function formatSmartKnowledgeReply(
   query: string,
   rawContent: string,
@@ -18,10 +18,99 @@ export function formatSmartKnowledgeReply(
 ): string {
   const queryLower = query.toLowerCase();
 
-  // 1. Check if user is asking for the entire menu
+  // 1. Check if user is asking about Operating Hours (Giờ mở cửa)
+  if (
+    queryLower.includes('giờ mở') ||
+    queryLower.includes('mở cửa') ||
+    queryLower.includes('đóng cửa') ||
+    queryLower.includes('mấy giờ') ||
+    queryLower.includes('thời gian mở') ||
+    queryLower.includes('hoạt động lúc')
+  ) {
+    const lines = rawContent.split('\n');
+    let hoursLine = '';
+    for (const l of lines) {
+      if (l.toLowerCase().includes('giờ mở cửa') || l.toLowerCase().includes('08:00') || l.toLowerCase().includes('21:00')) {
+        hoursLine = l.replace(/^[\s*•\-–]+/, '').trim();
+        break;
+      }
+    }
+
+    if (hoursLine) {
+      return `Xin chào ${displayName}! Em là ${botName}.\n\n⏰ **Thời gian hoạt động:**\n• ${hoursLine}\n\nQuán mở cửa xuyên suốt cả tuần, rất hân hạnh được đón tiếp và phục vụ bạn ạ! 🍗✨`;
+    }
+    return `Xin chào ${displayName}! Em là ${botName}.\n\n⏰ **Giờ mở cửa của quán:** 08:00 – 21:00 hằng ngày (mở cửa xuyên suốt cả tuần bạn nhé)!\n\nQuán rất hân hạnh được phục vụ bạn ạ! 🍗✨`;
+  }
+
+  // 2. Check if user is asking about Address / Location (Địa chỉ / Vị trí quán)
+  if (
+    queryLower.includes('địa chỉ') ||
+    queryLower.includes('ở đâu') ||
+    queryLower.includes('vị trí') ||
+    queryLower.includes('chỉ đường') ||
+    queryLower.includes('bản đồ') ||
+    queryLower.includes('maps') ||
+    queryLower.includes('google maps')
+  ) {
+    const lines = rawContent.split('\n');
+    let addressLine = '';
+    let mapsLine = '';
+
+    for (const l of lines) {
+      const low = l.toLowerCase();
+      if (low.includes('địa chỉ')) {
+        addressLine = l.replace(/^[\s*•\-–]+/, '').trim();
+      } else if (low.includes('bản đồ') || low.includes('maps.app.goo.gl') || low.includes('google maps')) {
+        mapsLine = l.replace(/^[\s*•\-–]+/, '').trim();
+      }
+    }
+
+    let reply = `Xin chào ${displayName}! Em là ${botName}.\n\n📍 **Địa chỉ quán:**\n• ${addressLine || 'Số 41 Trần Phú, Phường Phước Hậu, tỉnh Vĩnh Long.'}`;
+    if (mapsLine) {
+      reply += `\n🗺️ **Chỉ đường (Google Maps):**\n• ${mapsLine}`;
+    }
+    reply += `\n\nQuán rất vui được đón tiếp bạn ghé thưởng thức ạ! 😊🍗`;
+    return reply;
+  }
+
+  // 3. Check if user is asking about Hotline / Contact (Số điện thoại / Liên hệ)
+  if (
+    queryLower.includes('hotline') ||
+    queryLower.includes('số điện thoại') ||
+    queryLower.includes('sđt') ||
+    queryLower.includes('điện thoại') ||
+    queryLower.includes('quản lý') ||
+    queryLower.includes('liên hệ')
+  ) {
+    const lines = rawContent.split('\n');
+    let hotlineLine = '';
+    for (const l of lines) {
+      if (l.toLowerCase().includes('hotline') || l.includes('0986.000.797') || l.toLowerCase().includes('zalo quản lý')) {
+        hotlineLine = l.replace(/^[\s*•\-–]+/, '').trim();
+        break;
+      }
+    }
+    return `Xin chào ${displayName}! Em là ${botName}.\n\n📞 **Hotline / Zalo Quản lý:**\n• ${hotlineLine || '0986.000.797'}\n\nBạn có thể gọi điện hoặc nhắn tin trực tiếp số trên để được hỗ trợ nhanh nhất nhé! ✨`;
+  }
+
+  // 4. Check if user is asking about Online Delivery (Giao hàng tận nơi)
+  if (
+    queryLower.includes('giao hàng') ||
+    queryLower.includes('đặt hàng') ||
+    queryLower.includes('ship') ||
+    queryLower.includes('giao tận nơi') ||
+    queryLower.includes('shopeefood') ||
+    queryLower.includes('grabfood') ||
+    queryLower.includes('villfood') ||
+    queryLower.includes('app')
+  ) {
+    return `Xin chào ${displayName}! Em là ${botName}.\n\n🛵 **Kênh đặt món giao tận nơi:**\n• ShopeeFood, GrabFood, VillFood (Tìm kiếm: "${botName}")\n• Hotline / Zalo đặt hàng: 0986.000.797\n\nQuán luôn sẵn sàng giao món nóng hổi, giòn rụm đến tận nhà bạn nhé! 🍗😋`;
+  }
+
+  // 5. Check if user is asking for the entire menu
   const isFullMenu = /\b(menu|thực đơn|toàn bộ|tất cả|danh sách món|các món|quán có gì|có những gì|bảng giá tổng|full)\b/i.test(queryLower);
 
-  // 2. Identify specific food search keywords
+  // 6. Identify specific food search keywords
   const FOOD_TERMS = [
     'xúc xích', 'hotdog', 'torpedo', 'sumo',
     'gà giòn', 'gà rán', 'cánh gà', 'đùi gà', 'gà xiên', 'tatsutaage', 'gà cay',
@@ -82,13 +171,66 @@ export function formatSmartKnowledgeReply(
     }
   }
 
+  // 7. Sanitize content: strip out internal prompt rules and guidelines
+  const sanitizedContent = sanitizeCustomerFacingContent(rawContent);
+
   // If full menu or general inquiry, format cleanly
   if (isFullMenu) {
-    return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn **Thực đơn đầy đủ** của quán ạ:\n\n${rawContent.trim()}\n\n🛵 **Đặt hàng giao tận nơi:** Quán có mặt trên ShopeeFood, GrabFood, VillFood (Tìm: "${botName}") hoặc liên hệ Hotline/Zalo Quản lý: 0986.000.797 bạn nhé! 🍗✨`;
+    return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn **Thực đơn đầy đủ** của quán ạ:\n\n${sanitizedContent}\n\n🛵 **Đặt hàng giao tận nơi:** Quán có mặt trên ShopeeFood, GrabFood, VillFood (Tìm: "${botName}") hoặc liên hệ Hotline/Zalo Quản lý: 0986.000.797 bạn nhé! 🍗✨`;
   }
 
   // General clean fallback
-  return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${rawContent.trim()}`;
+  return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${sanitizedContent}`;
+}
+
+// Strip internal administrative sections that must never be shown to customers
+function sanitizeCustomerFacingContent(content: string): string {
+  const lines = content.split('\n');
+  const cleanLines: string[] = [];
+  let skippingInternalSection = false;
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const lower = trimmed.toLowerCase();
+
+    // Check if this line starts an internal section
+    if (
+      lower.includes('định vị thương hiệu') ||
+      lower.includes('phong cách giao tiếp') ||
+      lower.includes('giọng điệu của bot') ||
+      lower.includes('khi xử lý khiếu nại') ||
+      lower.includes('quy tắc vận hành') ||
+      lower.includes('khách hàng mục tiêu')
+    ) {
+      skippingInternalSection = true;
+      continue;
+    }
+
+    // Check if we reached a customer-facing section like "THỰC ĐƠN", "BẢNG GIÁ", "THÔNG TIN CỬA HÀNG"
+    if (
+      lower.includes('thực đơn') ||
+      lower.includes('bảng giá') ||
+      lower.includes('thông tin cửa hàng') ||
+      trimmed.startsWith('|')
+    ) {
+      skippingInternalSection = false;
+    }
+
+    if (!skippingInternalSection) {
+      // Also filter out single prompt-like lines
+      if (
+        !lower.includes('kho tri thức & quy tắc') &&
+        !lower.includes('chuyển ngay sang thái độ nghiêm túc') &&
+        !lower.includes('tuyệt đối không tranh cãi') &&
+        !lower.includes('giọng điệu của bot')
+      ) {
+        cleanLines.push(line);
+      }
+    }
+  }
+
+  const result = cleanLines.join('\n').trim();
+  return result || content.trim();
 }
 
 // Inbound webhook for Zalo Bot Platform

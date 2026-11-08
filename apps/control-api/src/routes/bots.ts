@@ -62,7 +62,7 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
   // Commercial Quota Check: Max bots per plan
   try {
     const planRow = await c.env.DB.prepare(
-      'SELECT p.max_bots, p.name FROM tenants t JOIN plans p ON t.plan_id = p.id WHERE t.id = ?'
+      'SELECT COALESCE(p.max_bots, 1) as max_bots, COALESCE(p.name, UPPER(t.plan_id)) as name FROM tenants t LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id) WHERE t.id = ?'
     )
       .bind(user.tenant_id)
       .first<{ max_bots: number; name: string }>();

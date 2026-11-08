@@ -49,42 +49,58 @@ billingRouter.get('/subscription', async (c) => {
   const user = c.get('user');
   const tenantId = user.tenant_id;
 
-  const tenant = await c.env.DB.prepare(`
-    SELECT t.id, t.name, t.plan_id, t.status, p.name as plan_name, p.price_vnd,
-           p.max_bots, p.monthly_ai_messages, p.max_documents
-    FROM tenants t
-    JOIN plans p ON t.plan_id = p.id
-    WHERE t.id = ?
-  `)
-    .bind(tenantId)
-    .first<{
-      id: string;
-      name: string;
-      plan_id: string;
-      status: string;
-      plan_name: string;
-      price_vnd: number;
-      max_bots: number;
-      monthly_ai_messages: number;
-      max_documents: number;
-    }>();
-
-  if (!tenant) {
-    return c.json({ error: 'Tenant not found' }, 404);
+  let tenant = null;
+  if (tenantId) {
+    tenant = await c.env.DB.prepare(`
+      SELECT t.id, t.name, t.plan_id, t.status,
+             COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
+             COALESCE(p.price_vnd, 199000) as price_vnd,
+             COALESCE(p.max_bots, 1) as max_bots,
+             COALESCE(p.monthly_ai_messages, 1000) as monthly_ai_messages,
+             COALESCE(p.max_documents, 5) as max_documents
+      FROM tenants t
+      LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
+      WHERE t.id = ?
+    `)
+      .bind(tenantId)
+      .first<{
+        id: string;
+        name: string;
+        plan_id: string;
+        status: string;
+        plan_name: string;
+        price_vnd: number;
+        max_bots: number;
+        monthly_ai_messages: number;
+        max_documents: number;
+      }>();
   }
+
+  // Safe fallback if tenant is missing or user has no tenant_id
+  const effectiveTenant = tenant || {
+    id: tenantId || 'tenant_default',
+    name: 'Doanh nghiệp',
+    plan_id: 'starter',
+    status: 'active',
+    plan_name: 'Starter',
+    price_vnd: 199000,
+    max_bots: 1,
+    monthly_ai_messages: 1000,
+    max_documents: 5,
+  };
 
   // Count current bots
   const botCount = await c.env.DB.prepare(
     "SELECT COUNT(*) as cnt FROM bots WHERE tenant_id = ? AND status != 'deleted'"
   )
-    .bind(tenantId)
+    .bind(effectiveTenant.id)
     .first<{ cnt: number }>();
 
   // Count current documents
   const docCount = await c.env.DB.prepare(
     'SELECT COUNT(*) as cnt FROM documents WHERE tenant_id = ?'
   )
-    .bind(tenantId)
+    .bind(effectiveTenant.id)
     .first<{ cnt: number }>();
 
   // Count monthly AI messages
@@ -93,36 +109,45 @@ billingRouter.get('/subscription', async (c) => {
     FROM usage_daily
     WHERE tenant_id = ?
   `)
-    .bind(tenantId)
+    .bind(effectiveTenant.id)
     .first<{ total_ai: number | null }>();
 
   const currentBots = botCount?.cnt || 0;
   const currentDocs = docCount?.cnt || 0;
   const currentAiMsgs = usage?.total_ai || 0;
 
+  const botsQuota = {
+    current: currentBots,
+    max: effectiveTenant.max_bots,
+    percent: Math.min(100, Math.round((currentBots / effectiveTenant.max_bots) * 100)),
+  };
+
+  const docsQuota = {
+    current: currentDocs,
+    max: effectiveTenant.max_documents,
+    percent: Math.min(100, Math.round((currentDocs / effectiveTenant.max_documents) * 100)),
+  };
+
+  const aiQuota = {
+    current: currentAiMsgs,
+    max: effectiveTenant.monthly_ai_messages,
+    percent: Math.min(100, Math.round((currentAiMsgs / effectiveTenant.monthly_ai_messages) * 100)),
+  };
+
   return c.json({
     ok: true,
     subscription: {
-      plan_id: tenant.plan_id,
-      plan_name: tenant.plan_name,
-      price_vnd: tenant.price_vnd,
-      status: tenant.status,
+      plan_id: effectiveTenant.plan_id.toLowerCase(),
+      plan_name: effectiveTenant.plan_name,
+      price_vnd: effectiveTenant.price_vnd,
+      status: effectiveTenant.status,
+      bots: botsQuota,
+      documents: docsQuota,
+      ai_messages: aiQuota,
       usage: {
-        bots: {
-          current: currentBots,
-          max: tenant.max_bots,
-          percent: Math.min(100, Math.round((currentBots / tenant.max_bots) * 100)),
-        },
-        documents: {
-          current: currentDocs,
-          max: tenant.max_documents,
-          percent: Math.min(100, Math.round((currentDocs / tenant.max_documents) * 100)),
-        },
-        ai_messages: {
-          current: currentAiMsgs,
-          max: tenant.monthly_ai_messages,
-          percent: Math.min(100, Math.round((currentAiMsgs / tenant.monthly_ai_messages) * 100)),
-        },
+        bots: botsQuota,
+        documents: docsQuota,
+        ai_messages: aiQuota,
       },
     },
   });

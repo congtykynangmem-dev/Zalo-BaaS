@@ -204,7 +204,7 @@ documentsRouter.post(
     // Commercial Quota Check: Document limit per plan
     try {
       const planRow = await c.env.DB.prepare(
-        'SELECT p.max_documents, p.name FROM tenants t JOIN plans p ON t.plan_id = p.id WHERE t.id = ?'
+        'SELECT COALESCE(p.max_documents, 5) as max_documents, COALESCE(p.name, UPPER(t.plan_id)) as name FROM tenants t LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id) WHERE t.id = ?'
       )
         .bind(tenantId)
         .first<{ max_documents: number; name: string }>();

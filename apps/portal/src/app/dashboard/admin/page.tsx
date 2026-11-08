@@ -39,6 +39,9 @@ interface TenantItem {
   plan_id: string;
   plan_name: string;
   price_vnd: number;
+  max_bots?: number;
+  max_documents?: number;
+  monthly_ai_messages?: number;
   status: 'active' | 'suspended';
   contact_email: string;
   created_at: number;
@@ -114,7 +117,10 @@ export default function AdminPage() {
         method: 'POST',
         body: JSON.stringify({
           name: newTenantName.trim(),
+          tenant_name: newTenantName.trim(),
+          email: newAdminEmail.trim(),
           admin_email: newAdminEmail.trim(),
+          password: newAdminPassword.trim(),
           admin_password: newAdminPassword.trim(),
           plan_id: newPlanId,
         }),
@@ -312,13 +318,50 @@ export default function AdminPage() {
                     )}
                   </td>
 
-                  <td className="py-4 px-6 font-medium">
-                    <span className="text-blue-600 font-bold">{t.bot_count}</span> bot &middot;{' '}
-                    <span className="text-indigo-600 font-bold">{t.doc_count}</span> tài liệu
+                  <td className="py-4 px-6">
+                    <div className="space-y-1.5 min-w-[130px]">
+                      <div>
+                        <div className="flex items-center justify-between text-[11px] mb-0.5">
+                          <span className="text-slate-500 font-medium">Bot:</span>
+                          <span className="font-bold text-blue-700">{t.bot_count} / {t.max_bots || 1}</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-blue-600 rounded-full"
+                            style={{ width: `${Math.min(100, Math.round((t.bot_count / (t.max_bots || 1)) * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between text-[11px] mb-0.5">
+                          <span className="text-slate-500 font-medium">RAG:</span>
+                          <span className="font-bold text-indigo-700">{t.doc_count} / {t.max_documents || 5}</span>
+                        </div>
+                        <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                          <div
+                            className="h-full bg-indigo-600 rounded-full"
+                            style={{ width: `${Math.min(100, Math.round((t.doc_count / (t.max_documents || 5)) * 100))}%` }}
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </td>
 
-                  <td className="py-4 px-6 font-mono text-slate-600">
-                    {t.ai_messages_count.toLocaleString()} msgs
+                  <td className="py-4 px-6">
+                    <div className="space-y-1 min-w-[130px]">
+                      <div className="flex items-center justify-between text-[11px] mb-0.5">
+                        <span className="text-slate-500 font-medium">AI msgs:</span>
+                        <span className="font-bold text-emerald-700 font-mono">
+                          {t.ai_messages_count.toLocaleString()} / {(t.monthly_ai_messages || 1000).toLocaleString()}
+                        </span>
+                      </div>
+                      <div className="h-1.5 w-full bg-slate-100 rounded-full overflow-hidden">
+                        <div
+                          className="h-full bg-emerald-600 rounded-full"
+                          style={{ width: `${Math.min(100, Math.round((t.ai_messages_count / (t.monthly_ai_messages || 1000)) * 100))}%` }}
+                        />
+                      </div>
+                    </div>
                   </td>
 
                   <td className="py-4 px-6 text-slate-400">
@@ -459,6 +502,22 @@ export default function AdminPage() {
               </button>
             </div>
 
+            <div className="mb-4 rounded-xl bg-slate-50 p-3.5 border border-slate-200/80 text-xs space-y-2">
+              <div className="font-bold text-slate-700">Hạn mức tài nguyên hiện tại:</div>
+              <div className="flex justify-between text-slate-600">
+                <span>Số Bot kết nối:</span>
+                <span className="font-bold text-blue-700">{editingTenant.bot_count} / {editingTenant.max_bots || 1}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Kho tài liệu RAG:</span>
+                <span className="font-bold text-indigo-700">{editingTenant.doc_count} / {editingTenant.max_documents || 5}</span>
+              </div>
+              <div className="flex justify-between text-slate-600">
+                <span>Tin nhắn AI tháng này:</span>
+                <span className="font-bold text-emerald-700">{editingTenant.ai_messages_count.toLocaleString()} / {(editingTenant.monthly_ai_messages || 1000).toLocaleString()}</span>
+              </div>
+            </div>
+
             <form onSubmit={handleUpdateTenant} className="space-y-4">
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -512,3 +571,4 @@ export default function AdminPage() {
     </div>
   );
 }
+

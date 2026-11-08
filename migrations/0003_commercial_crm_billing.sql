@@ -20,3 +20,4 @@ CREATE TABLE IF NOT EXISTS invoices (
   paid_at INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_invoices_tenant ON invoices(tenant_id, status);
+

@@ -21,7 +21,7 @@ adminRouter.get('/overview', async (c) => {
   const revenueRow = await c.env.DB.prepare(`
     SELECT SUM(p.price_vnd) as monthly_revenue
     FROM tenants t
-    JOIN plans p ON t.plan_id = p.id
+    JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
     WHERE t.status = 'active' AND p.price_vnd > 0
   `).first<{ monthly_revenue: number | null }>();
 
@@ -38,16 +38,20 @@ adminRouter.get('/overview', async (c) => {
   });
 });
 
-// 2. List All Tenants with Stats
+// 2. List All Tenants with Detailed Quota & Stats
 adminRouter.get('/tenants', async (c) => {
   const rows = await c.env.DB.prepare(`
     SELECT t.id, t.name, t.plan_id, t.status, t.contact_email, t.created_at,
-           p.name as plan_name, p.price_vnd,
-           (SELECT COUNT(*) FROM bots b WHERE b.tenant_id = t.id) as bot_count,
+           COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
+           COALESCE(p.price_vnd, 0) as price_vnd,
+           COALESCE(p.max_bots, 1) as max_bots,
+           COALESCE(p.max_documents, 5) as max_documents,
+           COALESCE(p.monthly_ai_messages, 1000) as monthly_ai_messages,
+           (SELECT COUNT(*) FROM bots b WHERE b.tenant_id = t.id AND b.status != 'deleted') as bot_count,
            (SELECT COUNT(*) FROM documents d WHERE d.tenant_id = t.id) as doc_count,
            (SELECT COALESCE(SUM(u.ai_messages), 0) FROM usage_daily u WHERE u.tenant_id = t.id) as ai_messages_count
     FROM tenants t
-    JOIN plans p ON t.plan_id = p.id
+    LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
     ORDER BY t.created_at DESC
   `).all<{
     id: string;
@@ -58,6 +62,9 @@ adminRouter.get('/tenants', async (c) => {
     created_at: number;
     plan_name: string;
     price_vnd: number;
+    max_bots: number;
+    max_documents: number;
+    monthly_ai_messages: number;
     bot_count: number;
     doc_count: number;
     ai_messages_count: number;
@@ -120,18 +127,26 @@ adminRouter.patch('/tenants/:id', async (c) => {
 // 4. Manually Provision New Tenant & Admin User
 adminRouter.post('/tenants', async (c) => {
   const body = await c.req.json<{
+    name?: string;
     tenant_name?: string;
+    email?: string;
     admin_email?: string;
+    password?: string;
     admin_password?: string;
     plan_id?: string;
   }>();
 
-  if (!body.tenant_name || !body.admin_email || !body.admin_password) {
+  const tenantName = (body.name || body.tenant_name || '').trim();
+  const adminEmail = (body.email || body.admin_email || '').trim().toLowerCase();
+  const adminPassword = (body.password || body.admin_password || '').trim();
+  const planId = body.plan_id || 'starter';
+
+  if (!tenantName || !adminEmail || !adminPassword) {
     return c.json({ error: 'Tên doanh nghiệp, email và mật khẩu là bắt buộc' }, 400);
   }
 
   const existing = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
-    .bind(body.admin_email.trim().toLowerCase())
+    .bind(adminEmail)
     .first();
 
   if (existing) {
@@ -141,19 +156,18 @@ adminRouter.post('/tenants', async (c) => {
   const tenantId = `tenant_${nanoid(12)}`;
   const userId = `usr_${nanoid(16)}`;
   const now = Date.now();
-  const planId = body.plan_id || 'starter';
 
   await c.env.DB.prepare(
     'INSERT INTO tenants (id, name, plan_id, status, contact_email, created_at) VALUES (?, ?, ?, ?, ?, ?)'
   )
-    .bind(tenantId, body.tenant_name.trim(), planId, 'active', body.admin_email.trim().toLowerCase(), now)
+    .bind(tenantId, tenantName, planId, 'active', adminEmail, now)
     .run();
 
-  const passwordHash = await hashPassword(body.admin_password);
+  const passwordHash = await hashPassword(adminPassword);
   await c.env.DB.prepare(
     'INSERT INTO users (id, tenant_id, email, password_hash, role, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)'
   )
-    .bind(userId, tenantId, body.admin_email.trim().toLowerCase(), passwordHash, 'tenant_admin', 'active', now)
+    .bind(userId, tenantId, adminEmail, passwordHash, 'tenant_admin', 'active', now)
     .run();
 
   return c.json({
@@ -161,12 +175,13 @@ adminRouter.post('/tenants', async (c) => {
     message: 'Khởi tạo tài khoản doanh nghiệp thành công!',
     tenant: {
       id: tenantId,
-      name: body.tenant_name.trim(),
+      name: tenantName,
       plan_id: planId,
     },
     user: {
       id: userId,
-      email: body.admin_email.trim().toLowerCase(),
+      email: adminEmail,
     },
   });
 });
+

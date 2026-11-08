@@ -659,6 +659,51 @@ describe('Control API Worker (apps/control-api)', () => {
     expect(menuReply).toContain('Cá viên');
     expect(menuReply).toContain('Xúc xích Phô mai');
     expect(menuReply).toContain('Đặt hàng giao tận nơi');
+
+    // 3. Customer only asks about opening hours (Must NOT leak brand positioning or full menu)
+    const rawDocumentWithInternalNotes = `
+KHO TRI THỨC & QUY TẮC VẬN HÀNH: GÀ RÁN FIVE STAR - 41 TRẦN PHÚ
+1. THÔNG TIN CỬA HÀNG & LIÊN HỆ
+- Tên thương hiệu: Gà rán Five Star - 41 Trần Phú.
+- Địa chỉ: Số 41 Trần Phú, Phường Phước Hậu, tỉnh Vĩnh Long.
+- Bản đồ chỉ đường (Google Maps): https://maps.app.goo.gl/4PXdHdTtxRucwdvR6
+- Giờ mở cửa: 08:00 – 21:00 hằng ngày (Mở cửa xuyên suốt cả tuần).
+- Hotline / Zalo Quản lý: 0986.000.797.
+- Kênh đặt hàng trực tuyến: ShopeeFood, GrabFood.
+
+2. ĐỊNH VỊ THƯƠNG HIỆU & PHONG CÁCH GIAO TIẾP
+- Giọng điệu của Bot: Vui vẻ, gần gũi.
+- Khi xử lý khiếu nại: Chuyển ngay sang thái độ nghiêm túc.
+
+3. THỰC ĐƠN & BẢNG GIÁ NIÊM YẾT
+| Tên món | Giá bán |
+| Gà rán giòn | 32.000đ |
+`;
+
+    const hoursReply = formatSmartKnowledgeReply(
+      'giờ mở cửa của cửa hàng?',
+      rawDocumentWithInternalNotes,
+      'Five Star - 41 Trần Phú',
+      'Mr Bửu'
+    );
+
+    expect(hoursReply).toContain('08:00 – 21:00');
+    expect(hoursReply).not.toContain('ĐỊNH VỊ THƯƠNG HIỆU');
+    expect(hoursReply).not.toContain('Giọng điệu của Bot');
+    expect(hoursReply).not.toContain('Khi xử lý khiếu nại');
+    expect(hoursReply).not.toContain('THỰC ĐƠN & BẢNG GIÁ');
+
+    // 4. Customer asks about address
+    const addressReply = formatSmartKnowledgeReply(
+      'quán ở đâu vậy em?',
+      rawDocumentWithInternalNotes,
+      'Five Star - 41 Trần Phú',
+      'Mr Bửu'
+    );
+
+    expect(addressReply).toContain('41 Trần Phú');
+    expect(addressReply).not.toContain('ĐỊNH VỊ THƯƠNG HIỆU');
+    expect(addressReply).not.toContain('THỰC ĐƠN & BẢNG GIÁ');
   });
 
   it('supports commercial billing: plans, vietqr invoice creation & payment confirmation', async () => {

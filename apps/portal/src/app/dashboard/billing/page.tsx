@@ -2,6 +2,7 @@
 
 import React, { useEffect, useState } from 'react';
 import { fetchApi } from '@/lib/api';
+import { useAuth } from '@/lib/auth-context';
 import {
   CreditCard,
   CheckCircle2,
@@ -50,8 +51,42 @@ interface PaymentInvoice {
   vietqr_url: string;
 }
 
+const DEFAULT_PLANS: Plan[] = [
+  {
+    id: 'starter',
+    name: 'Starter',
+    price_vnd: 199000,
+    max_bots: 1,
+    monthly_ai_messages: 1000,
+    max_documents: 5,
+    max_doc_mb: 10,
+    features: { rag: true, markdown: true, handover: true },
+  },
+  {
+    id: 'pro',
+    name: 'Pro',
+    price_vnd: 599000,
+    max_bots: 3,
+    monthly_ai_messages: 10000,
+    max_documents: 20,
+    max_doc_mb: 50,
+    features: { rag: true, markdown: true, handover: true, crm: true },
+  },
+  {
+    id: 'enterprise',
+    name: 'Enterprise',
+    price_vnd: 1990000,
+    max_bots: 10,
+    monthly_ai_messages: 50000,
+    max_documents: 100,
+    max_doc_mb: 200,
+    features: { rag: true, markdown: true, handover: true, crm: true, priority_support: true },
+  },
+];
+
 export default function BillingPage() {
-  const [plans, setPlans] = useState<Plan[]>([]);
+  const { user } = useAuth();
+  const [plans, setPlans] = useState<Plan[]>(DEFAULT_PLANS);
   const [sub, setSub] = useState<Subscription | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -67,15 +102,32 @@ export default function BillingPage() {
 
   const loadBillingData = async () => {
     setLoading(true);
+    // 1. Fetch plans
     try {
-      const [plansRes, subRes] = await Promise.all([
-        fetchApi<{ ok: boolean; plans: Plan[] }>('/v1/billing/plans'),
-        fetchApi<{ ok: boolean; subscription: Subscription }>('/v1/billing/subscription'),
-      ]);
-      setPlans(plansRes.plans || []);
-      setSub(subRes.subscription || null);
-    } catch (err) {
-      console.error('Failed to load billing data:', err);
+      const plansRes = await fetchApi<{ ok: boolean; plans: Plan[] }>('/v1/billing/plans');
+      if (plansRes?.plans && plansRes.plans.length > 0) {
+        setPlans(plansRes.plans);
+      }
+    } catch (e) {
+      console.warn('Failed to load plans from API, using default:', e);
+    }
+
+    // 2. Fetch subscription & quota usage
+    try {
+      const subRes = await fetchApi<{ ok: boolean; subscription: any }>('/v1/billing/subscription');
+      if (subRes?.subscription) {
+        const s = subRes.subscription;
+        setSub({
+          plan_id: (s.plan_id || 'starter').toLowerCase(),
+          plan_name: s.plan_name || 'Starter',
+          status: s.status || 'active',
+          bots: s.bots || s.usage?.bots || { current: 0, max: 1 },
+          documents: s.documents || s.usage?.documents || { current: 0, max: 5 },
+          ai_messages: s.ai_messages || s.usage?.ai_messages || { current: 0, max: 1000 },
+        });
+      }
+    } catch (e) {
+      console.warn('Failed to load subscription:', e);
     } finally {
       setLoading(false);
     }
@@ -149,6 +201,15 @@ export default function BillingPage() {
     );
   }
 
+  const effectiveSub: Subscription = sub || {
+    plan_id: (user?.tenant?.plan_id || 'starter').toLowerCase(),
+    plan_name: user?.tenant?.plan_id ? user.tenant.plan_id.toUpperCase() : 'Starter',
+    status: 'active',
+    bots: { current: 0, max: 1 },
+    documents: { current: 0, max: 5 },
+    ai_messages: { current: 0, max: 1000 },
+  };
+
   return (
     <div className="space-y-8">
       {/* Page Header */}
@@ -163,97 +224,95 @@ export default function BillingPage() {
       </div>
 
       {/* Subscription Quota Usage Card */}
-      {sub && (
-        <div className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50/50 via-white to-indigo-50/30 p-6 shadow-sm">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-blue-100 pb-5">
-            <div>
-              <span className="text-xs font-semibold uppercase tracking-wider text-blue-600">
-                Gói hiện tại
+      <div className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50/50 via-white to-indigo-50/30 p-6 shadow-sm">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-blue-100 pb-5">
+          <div>
+            <span className="text-xs font-semibold uppercase tracking-wider text-blue-600">
+              Gói hiện tại
+            </span>
+            <div className="flex items-center gap-3 mt-1">
+              <h2 className="text-xl font-bold text-slate-900">{effectiveSub.plan_name}</h2>
+              <span className="rounded-full bg-emerald-100 px-3 py-0.5 text-xs font-bold text-emerald-800">
+                {effectiveSub.status === 'active' ? 'Đang hoạt động' : effectiveSub.status}
               </span>
-              <div className="flex items-center gap-3 mt-1">
-                <h2 className="text-xl font-bold text-slate-900">{sub.plan_name}</h2>
-                <span className="rounded-full bg-emerald-100 px-3 py-0.5 text-xs font-bold text-emerald-800">
-                  {sub.status === 'active' ? 'Đang hoạt động' : sub.status}
-                </span>
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-              <Clock className="h-4 w-4 text-blue-500" />
-              <span>Chu kỳ gia hạn tự động hàng tháng</span>
             </div>
           </div>
 
-          {/* Quota Progress Bars */}
-          <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-6">
-            {/* Bots Quota */}
-            <div>
-              <div className="flex justify-between text-xs font-semibold text-slate-700 mb-1.5">
-                <span className="flex items-center gap-1.5">
-                  <Bot className="h-4 w-4 text-blue-600" /> Số lượng Bot
-                </span>
-                <span>
-                  {sub.bots.current} / {sub.bots.max} bot
-                </span>
-              </div>
-              <div className="h-2.5 w-full bg-slate-200 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-blue-600 rounded-full transition-all duration-500"
-                  style={{
-                    width: `${Math.min(100, Math.round((sub.bots.current / sub.bots.max) * 100))}%`,
-                  }}
-                />
-              </div>
-            </div>
+          <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
+            <Clock className="h-4 w-4 text-blue-500" />
+            <span>Chu kỳ gia hạn tự động hàng tháng</span>
+          </div>
+        </div>
 
-            {/* Docs Quota */}
-            <div>
-              <div className="flex justify-between text-xs font-semibold text-slate-700 mb-1.5">
-                <span className="flex items-center gap-1.5">
-                  <BookOpen className="h-4 w-4 text-indigo-600" /> Tài liệu RAG
-                </span>
-                <span>
-                  {sub.documents.current} / {sub.documents.max} tài liệu
-                </span>
-              </div>
-              <div className="h-2.5 w-full bg-slate-200 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-indigo-600 rounded-full transition-all duration-500"
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      Math.round((sub.documents.current / sub.documents.max) * 100)
-                    )}%`,
-                  }}
-                />
-              </div>
+        {/* Quota Progress Bars */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-6 mt-6">
+          {/* Bots Quota */}
+          <div>
+            <div className="flex justify-between text-xs font-semibold text-slate-700 mb-1.5">
+              <span className="flex items-center gap-1.5">
+                <Bot className="h-4 w-4 text-blue-600" /> Số lượng Bot
+              </span>
+              <span>
+                {effectiveSub.bots.current} / {effectiveSub.bots.max} bot
+              </span>
             </div>
+            <div className="h-2.5 w-full bg-slate-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-blue-600 rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.min(100, Math.round((effectiveSub.bots.current / (effectiveSub.bots.max || 1)) * 100))}%`,
+                }}
+              />
+            </div>
+          </div>
 
-            {/* AI Messages Quota */}
-            <div>
-              <div className="flex justify-between text-xs font-semibold text-slate-700 mb-1.5">
-                <span className="flex items-center gap-1.5">
-                  <MessageSquare className="h-4 w-4 text-emerald-600" /> Tin nhắn AI tháng này
-                </span>
-                <span>
-                  {sub.ai_messages.current.toLocaleString()} / {sub.ai_messages.max.toLocaleString()}
-                </span>
-              </div>
-              <div className="h-2.5 w-full bg-slate-200 rounded-full overflow-hidden">
-                <div
-                  className="h-full bg-emerald-600 rounded-full transition-all duration-500"
-                  style={{
-                    width: `${Math.min(
-                      100,
-                      Math.round((sub.ai_messages.current / sub.ai_messages.max) * 100)
-                    )}%`,
-                  }}
-                />
-              </div>
+          {/* Docs Quota */}
+          <div>
+            <div className="flex justify-between text-xs font-semibold text-slate-700 mb-1.5">
+              <span className="flex items-center gap-1.5">
+                <BookOpen className="h-4 w-4 text-indigo-600" /> Tài liệu RAG
+              </span>
+              <span>
+                {effectiveSub.documents.current} / {effectiveSub.documents.max} tài liệu
+              </span>
+            </div>
+            <div className="h-2.5 w-full bg-slate-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-indigo-600 rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.round((effectiveSub.documents.current / (effectiveSub.documents.max || 1)) * 100)
+                  )}%`,
+                }}
+              />
+            </div>
+          </div>
+
+          {/* AI Messages Quota */}
+          <div>
+            <div className="flex justify-between text-xs font-semibold text-slate-700 mb-1.5">
+              <span className="flex items-center gap-1.5">
+                <MessageSquare className="h-4 w-4 text-emerald-600" /> Tin nhắn AI tháng này
+              </span>
+              <span>
+                {effectiveSub.ai_messages.current.toLocaleString()} / {effectiveSub.ai_messages.max.toLocaleString()}
+              </span>
+            </div>
+            <div className="h-2.5 w-full bg-slate-200 rounded-full overflow-hidden">
+              <div
+                className="h-full bg-emerald-600 rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.min(
+                    100,
+                    Math.round((effectiveSub.ai_messages.current / (effectiveSub.ai_messages.max || 1)) * 100)
+                  )}%`,
+                }}
+              />
             </div>
           </div>
         </div>
-      )}
+      </div>
 
       {/* Pricing Tier Plans */}
       <div>
@@ -266,7 +325,7 @@ export default function BillingPage() {
 
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {plans.map((plan) => {
-            const isCurrent = sub?.plan_id === plan.id;
+            const isCurrent = effectiveSub.plan_id.toLowerCase() === plan.id.toLowerCase();
             const isPro = plan.id === 'pro';
 
             return (
@@ -507,3 +566,4 @@ export default function BillingPage() {
     </div>
   );
 }
+

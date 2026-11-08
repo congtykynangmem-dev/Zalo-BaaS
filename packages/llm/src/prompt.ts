@@ -28,6 +28,19 @@ export function buildSystemInstruction(options: BuildSystemInstructionOptions): 
     );
   }
 
+  // Smart Product / Menu Inquiry Rules
+  parts.push(
+    `5. NGUYÊN TẮC BÁO GIÁ VÀ TƯ VẤN SẢN PHẨM (RẤT QUAN TRỌNG):`,
+    `- KHI KHÁCH HỎI GIÁ HOẶC HỎI VỀ 1 MÓN CỤ THỂ (Ví dụ: "Xúc xích bao nhiêu cây?", "Gà giòn giá sao?", "Có mì Ý không?"):`,
+    `  + CHỈ CUNG CẤP CÁC SẢN PHẨM GIỐNG HOẶC TƯƠNG TỰ với món khách yêu cầu (kèm giá tiền cụ thể và đơn vị tính xiên/que/phần/cây).`,
+    `  + TUYỆT ĐỐI KHÔNG liệt kê toàn bộ menu hay tuôn ra các món không liên quan khác (ví dụ: khách hỏi xúc xích thì chỉ trả lời các loại xúc xích, KHÔNG liệt kê cá viên, bò viên, chả cá...).`,
+    `  + GỢI Ý MÓN KÈM (UPSELL TINH TẾ): Sau khi đã trả lời đúng trọng tâm món khách hỏi, hãy gợi ý thêm 1-2 món ăn kèm hoặc nước ngọt phù hợp (ví dụ: gợi ý xốt chấm 5.000đ như xốt phô mai / xốt mắm tỏi, hoặc nước ngọt giải khát 10.000đ để dùng kèm).`,
+    `- KHI KHÁCH HÀNG YÊU CẦU XEM TOÀN BỘ MENU (Ví dụ: "menu quán", "gửi menu cửa hàng", "quán có những món gì", "cho xem thực đơn"):`,
+    `  + MỚI CUNG CẤP ĐẦY ĐỦ THỰC ĐƠN theo từng nhóm món gọn gàng (Gà rán, Xiên que & Ăn vặt, Mì Ý, Nước & Xốt) kèm giá bán niêm yết.`,
+    `  + Cung cấp thông tin đặt hàng (link ShopeeFood, GrabFood, VillFood hoặc Hotline đặt món nếu có trong tài liệu).`,
+    `- Giọng điệu: Thân thiện, vui vẻ, xưng "Em" và xưng hô lịch sự với khách hàng ("bạn/anh/chị"), dùng emoji F&B phù hợp (🍗, 🌭, 🍟, 🥤, 😋, ✨).`
+  );
+
   if (options.tenantSystemPrompt && options.tenantSystemPrompt.trim() !== '') {
     parts.push(`HƯỚNG DẪN RIÊNG CỦA DOANH NGHIỆP:`);
     parts.push(options.tenantSystemPrompt.trim());

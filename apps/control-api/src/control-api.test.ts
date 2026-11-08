@@ -487,4 +487,56 @@ describe('Control API Worker (apps/control-api)', () => {
     expect(checkData.configured).toBe(true);
     expect(checkData.source).toBe('tenant_custom');
   });
+
+  it('filters specific items (sausage) and provides full menu when requested', async () => {
+    const { formatSmartKnowledgeReply } = await import('./routes/webhook.js');
+
+    const sampleTable = `
+| Tên món | Giá bán | Đơn vị | Ghi chú / Đặc điểm |
+|:---|:---|:---|:---|
+| Cá viên | 8.000đ | Xiên | Món quốc dân giá rẻ nhất quán |
+| Bò viên | 9.000đ | Xiên | Dai giòn sần sật |
+| Xúc xích Phô mai | 9.000đ | Xiên | Nhân phô mai tan chảy |
+| Phô mai que | 10.000đ | Que | Kéo sợi béo ngậy |
+| Xúc xích Torpedo truyền thống | 12.000đ | Que | Đậm vị thịt |
+| Xúc xích Sumo | 13.000đ | Xiên | Cây to chắc thịt |
+| Khoai tây lắc phô mai | 16.000đ | Phần | Thơm lừng vị phô mai |
+| Hotdog Phô mai tẩm khoai tây | 16.000đ | Que | Vỏ khoai tây giòn |
+`;
+
+    // 1. Customer asks about sausages specifically
+    const sausageReply = formatSmartKnowledgeReply(
+      'Xúc xích bao nhiêu cây?',
+      sampleTable,
+      'Five Star - 41 Trần Phú',
+      'Mr Bửu'
+    );
+
+    // Should include sausage items
+    expect(sausageReply).toContain('Xúc xích Phô mai');
+    expect(sausageReply).toContain('9.000đ');
+    expect(sausageReply).toContain('Xúc xích Torpedo');
+    expect(sausageReply).toContain('Xúc xích Sumo');
+
+    // Should NOT include unrelated items
+    expect(sausageReply).not.toContain('Cá viên');
+    expect(sausageReply).not.toContain('Bò viên');
+    expect(sausageReply).not.toContain('Khoai tây lắc');
+
+    // Should include upsell suggestion
+    expect(sausageReply).toContain('Gợi ý thêm');
+
+    // 2. Customer asks for full menu
+    const menuReply = formatSmartKnowledgeReply(
+      'Cho mình xem menu quán',
+      sampleTable,
+      'Five Star - 41 Trần Phú',
+      'Mr Bửu'
+    );
+
+    expect(menuReply).toContain('Thực đơn đầy đủ');
+    expect(menuReply).toContain('Cá viên');
+    expect(menuReply).toContain('Xúc xích Phô mai');
+    expect(menuReply).toContain('Đặt hàng giao tận nơi');
+  });
 });

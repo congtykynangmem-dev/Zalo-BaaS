@@ -74,7 +74,7 @@ describe('packages/llm', () => {
       });
 
       expect(fetchSpy).toHaveBeenCalledWith(
-        expect.stringContaining('/models/gemini-2.5-flash:generateContent?key=test_key'),
+        expect.stringContaining('/models/gemini-1.5-flash:generateContent?key=test_key'),
         expect.objectContaining({ method: 'POST' })
       );
       expect(result.text).toBe('**Xin chào!** Tôi có thể giúp gì cho bạn?');

@@ -16,7 +16,14 @@ import {
   Sparkles,
   ShieldAlert,
   RefreshCw,
+  SlidersHorizontal,
+  AlertCircle,
 } from 'lucide-react';
+
+const DEFAULT_FB_PROMPT = `Tư vấn bán hàng F&B chuyên nghiệp, nhiệt tình, thân thiện.
+- Khi khách hỏi giá hoặc món cụ thể: Chỉ trả lời các món tương tự và báo giá, sau đó gợi ý món ăn kèm/nước uống (upsell).
+- Khi khách hỏi menu toàn quán: Cung cấp danh mục các nhóm món kèm link đặt hàng hoặc hotline.
+- Xưng Em, dùng emoji 🍗, 🌭, 🍟, 🥤, xưng hô lịch sự với khách hàng.`;
 
 interface BotItem {
   id: string;
@@ -42,11 +49,19 @@ export default function BotsPage() {
   // Wizard state
   const [botToken, setBotToken] = useState('');
   const [customName, setCustomName] = useState('');
-  const [systemPrompt, setSystemPrompt] = useState('Tư vấn thân thiện, chuyên nghiệp.');
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_FB_PROMPT);
   const [strictGrounding, setStrictGrounding] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [wizardError, setWizardError] = useState('');
   const [connectedBot, setConnectedBot] = useState<BotItem | null>(null);
+
+  // Edit Bot Modal state
+  const [editingBot, setEditingBot] = useState<BotItem | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editPrompt, setEditPrompt] = useState('');
+  const [editStrict, setEditStrict] = useState(false);
+  const [savingBot, setSavingBot] = useState(false);
+  const [editError, setEditError] = useState('');
 
   const loadBots = async () => {
     try {
@@ -144,6 +159,38 @@ export default function BotsPage() {
       alert(`Lấy tên từ Zalo thất bại: ${err instanceof Error ? err.message : 'Lỗi không xác định'}`);
     } finally {
       setSyncingProfileId(null);
+    }
+  };
+
+  const handleOpenEditModal = (bot: BotItem) => {
+    setEditingBot(bot);
+    setEditName(bot.name);
+    setEditPrompt(bot.system_prompt || DEFAULT_FB_PROMPT);
+    setEditStrict(Boolean(bot.strict_grounding));
+    setEditError('');
+  };
+
+  const handleSaveBot = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingBot) return;
+    setSavingBot(true);
+    setEditError('');
+
+    try {
+      await fetchApi(`/v1/bots/${editingBot.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          name: editName.trim() || editingBot.name,
+          system_prompt: editPrompt.trim(),
+          strict_grounding: editStrict,
+        }),
+      });
+      await loadBots();
+      setEditingBot(null);
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Lưu cấu hình thất bại');
+    } finally {
+      setSavingBot(false);
     }
   };
 
@@ -293,7 +340,14 @@ export default function BotsPage() {
                   {syncingId === bot.id ? 'Đang đồng bộ...' : 'Đồng bộ Webhook'}
                 </button>
 
-                <div className="flex items-center gap-3">
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleOpenEditModal(bot)}
+                    className="flex items-center gap-1 text-xs font-semibold text-slate-700 hover:text-blue-600 bg-slate-50 hover:bg-slate-100 px-2.5 py-1 rounded-lg border border-slate-200 transition"
+                    title="Cấu hình chỉ thị Prompt và tính năng của Bot"
+                  >
+                    <SlidersHorizontal className="h-3 w-3 text-blue-600" /> Cấu hình & Prompt
+                  </button>
                   <button
                     onClick={() => handleToggleStatus(bot)}
                     className={`flex items-center gap-1 text-xs font-semibold ${
@@ -410,15 +464,25 @@ export default function BotsPage() {
                   </div>
 
                   <div>
-                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
-                      Chỉ thị phong cách của Bot (System Prompt)
-                    </label>
+                    <div className="flex items-center justify-between mb-1">
+                      <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                        Chỉ thị phong cách của Bot (System Prompt)
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setSystemPrompt(DEFAULT_FB_PROMPT)}
+                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded transition"
+                      >
+                        <Sparkles className="h-3 w-3 text-blue-600" />
+                        Mẫu Prompt F&B chuẩn
+                      </button>
+                    </div>
                     <textarea
-                      rows={2}
+                      rows={4}
                       value={systemPrompt}
                       onChange={(e) => setSystemPrompt(e.target.value)}
-                      placeholder="Hướng dẫn cách xưng hô, giọng điệu tư vấn..."
-                      className="mt-1 w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600"
+                      placeholder="Hướng dẫn cách xưng hô, giọng điệu tư vấn, quy tắc báo giá..."
+                      className="mt-1 w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600 font-mono text-[11px]"
                     />
                   </div>
 
@@ -497,6 +561,113 @@ export default function BotsPage() {
                 </div>
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* --- EDIT BOT CONFIGURATION & PROMPT MODAL --- */}
+      {editingBot && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm">
+          <div className="w-full max-w-xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-100 animate-in fade-in zoom-in-95 duration-150">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-50 text-blue-600 font-bold">
+                  <SlidersHorizontal className="h-5 w-5" />
+                </div>
+                <div>
+                  <h2 className="text-base font-bold text-slate-900">
+                    Cấu hình & Chỉ thị Prompt ({editingBot.name})
+                  </h2>
+                  <p className="text-xs text-slate-500">
+                    Tinh chỉnh phong cách ứng xử, quy tắc báo giá và trả lời món ăn của Bot
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setEditingBot(null)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {editError && (
+              <div className="mb-4 rounded-xl bg-red-50 p-3 text-xs text-red-600 border border-red-100 flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 shrink-0" />
+                <span>{editError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleSaveBot} className="space-y-4">
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                  Tên Bot hiển thị
+                </label>
+                <input
+                  type="text"
+                  required
+                  value={editName}
+                  onChange={(e) => setEditName(e.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600 font-semibold"
+                />
+              </div>
+
+              <div>
+                <div className="flex items-center justify-between mb-1.5">
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
+                    Chỉ thị phong cách (System Prompt)
+                  </label>
+                  <button
+                    type="button"
+                    onClick={() => setEditPrompt(DEFAULT_FB_PROMPT)}
+                    className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded transition"
+                  >
+                    <Sparkles className="h-3 w-3 text-blue-600" />
+                    Áp dụng mẫu Prompt F&B / Menu chuẩn
+                  </button>
+                </div>
+                <textarea
+                  rows={5}
+                  value={editPrompt}
+                  onChange={(e) => setEditPrompt(e.target.value)}
+                  placeholder="Nhập hướng dẫn cách thức trả lời, quy tắc tư vấn món..."
+                  className="w-full rounded-xl border border-slate-200 p-3 text-xs focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600 font-mono leading-relaxed"
+                />
+                <p className="mt-1 text-[11px] text-slate-400 leading-normal">
+                  💡 Mẹo: Bot đã tích hợp sẵn quy tắc chỉ báo đúng món khách hỏi và chỉ gửi toàn bộ Menu khi khách yêu cầu. Bạn có thể bổ sung thêm lời chào hoặc hotline riêng của quán tại đây.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <input
+                  type="checkbox"
+                  id="editStrict"
+                  checked={editStrict}
+                  onChange={(e) => setEditStrict(e.target.checked)}
+                  className="h-4 w-4 rounded border-slate-300 text-blue-600 focus:ring-blue-500"
+                />
+                <label htmlFor="editStrict" className="text-xs font-medium text-slate-700 cursor-pointer">
+                  Bật chế độ Strict Grounding (Chỉ trả lời nếu có trong tài liệu Kho Tri thức, chống bịa đặt 100%)
+                </label>
+              </div>
+
+              <div className="mt-6 flex justify-end gap-3 pt-4 border-t border-slate-100">
+                <button
+                  type="button"
+                  onClick={() => setEditingBot(null)}
+                  className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                >
+                  Hủy
+                </button>
+                <button
+                  type="submit"
+                  disabled={savingBot}
+                  className="rounded-xl bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition flex items-center gap-2"
+                >
+                  {savingBot ? 'Đang lưu...' : 'Lưu cấu hình'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

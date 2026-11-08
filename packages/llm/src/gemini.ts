@@ -37,7 +37,7 @@ export class GeminiClient {
   async generateContent(options: GenerateOptions): Promise<GenerateResult> {
     const candidateModels = options.model
       ? [options.model]
-      : ['gemini-2.5-flash', 'gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-1.5-pro'];
+      : ['gemini-1.5-flash', 'gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-1.5-pro'];
 
     let lastError: Error | null = null;
 

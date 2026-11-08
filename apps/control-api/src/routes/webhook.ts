@@ -9,6 +9,88 @@ import type { Env, HonoVariables } from '../types.js';
 
 export const webhookRouter = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
 
+// Helper to extract and format specific items or full menu politely
+export function formatSmartKnowledgeReply(
+  query: string,
+  rawContent: string,
+  botName: string,
+  displayName: string
+): string {
+  const queryLower = query.toLowerCase();
+
+  // 1. Check if user is asking for the entire menu
+  const isFullMenu = /\b(menu|thực đơn|toàn bộ|tất cả|danh sách món|các món|quán có gì|có những gì|bảng giá tổng|full)\b/i.test(queryLower);
+
+  // 2. Identify specific food search keywords
+  const FOOD_TERMS = [
+    'xúc xích', 'hotdog', 'torpedo', 'sumo',
+    'gà giòn', 'gà rán', 'cánh gà', 'đùi gà', 'gà xiên', 'tatsutaage', 'gà cay',
+    'cá viên', 'bò viên', 'tàu hủ', 'sủi cảo', 'phô mai que', 'chả cá', 'xíu mại',
+    'khoai tây', 'chả giò', 'gai jor',
+    'mì', 'spaghetti',
+    'xốt', 'sốt', 'mắm tỏi', 'phô mai',
+    'nước', 'pepsi', 'coca', 'sting', '7up', 'trà', 'giải khát'
+  ];
+
+  const matchedKeywords = FOOD_TERMS.filter((term) => queryLower.includes(term));
+
+  // If specific food item requested, filter markdown table rows or lines
+  if (!isFullMenu && (matchedKeywords.length > 0 || queryLower.includes('giá') || queryLower.includes('bao nhiêu'))) {
+    const lines = rawContent.split('\n');
+    const filteredRows: Array<{ name: string; price: string; unit: string; note: string }> = [];
+
+    const effectiveKeywords = matchedKeywords.length > 0
+      ? matchedKeywords
+      : queryLower.split(/\s+/).filter(w => w.length > 1 && !['giá', 'bao', 'nhiêu', 'tiền', 'cây', 'quán', 'bán', 'cho', 'hỏi', 'em', 'ơi', 'ạ', 'mình', 'có'].includes(w));
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('|') || trimmed.includes('|:--') || trimmed.includes('| Tên món |')) {
+        continue;
+      }
+      const parts = trimmed.split('|').map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        const dishName = parts[0];
+        const price = parts[1];
+        const unit = parts[2] || 'phần';
+        const note = parts[3] || '';
+
+        const lineLower = (dishName + ' ' + note).toLowerCase();
+        const matches = effectiveKeywords.some((kw) => lineLower.includes(kw));
+        if (matches) {
+          filteredRows.push({ name: dishName, price, unit, note });
+        }
+      }
+    }
+
+    if (filteredRows.length > 0) {
+      const keywordTitle = matchedKeywords[0] ? matchedKeywords[0].toUpperCase() : 'MÓN BẠN ĐANG HỎI';
+      const itemsList = filteredRows.map((r) => {
+        let emoji = '🍴';
+        const nLow = r.name.toLowerCase();
+        if (nLow.includes('gà')) emoji = '🍗';
+        else if (nLow.includes('xúc xích') || nLow.includes('hotdog')) emoji = '🌭';
+        else if (nLow.includes('khoai')) emoji = '🍟';
+        else if (nLow.includes('mì') || nLow.includes('spaghetti')) emoji = '🍝';
+        else if (nLow.includes('nước') || nLow.includes('trà') || nLow.includes('pepsi')) emoji = '🥤';
+        else if (nLow.includes('viên') || nLow.includes('que') || nLow.includes('xiên')) emoji = '🍢';
+
+        return `• ${emoji} **${r.name}**: ${r.price} / ${r.unit}${r.note ? ` _(${r.note})_` : ''}`;
+      }).join('\n');
+
+      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn bảng giá các loại **${keywordTitle}** tại quán ạ:\n\n${itemsList}\n\n✨ **Gợi ý thêm cho bạn:** Quán có các loại Xốt chấm cực ngon (Xốt phô mai / xốt mắm tỏi: 5.000đ) và Nước ngọt giải khát (10.000đ) dùng kèm để bữa ăn thêm trọn vị nhé! 😋`;
+    }
+  }
+
+  // If full menu or general inquiry, format cleanly
+  if (isFullMenu) {
+    return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn **Thực đơn đầy đủ** của quán ạ:\n\n${rawContent.trim()}\n\n🛵 **Đặt hàng giao tận nơi:** Quán có mặt trên ShopeeFood, GrabFood, VillFood (Tìm: "${botName}") hoặc liên hệ Hotline/Zalo Quản lý: 0986.000.797 bạn nhé! 🍗✨`;
+  }
+
+  // General clean fallback
+  return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${rawContent.trim()}`;
+}
+
 // Inbound webhook for Zalo Bot Platform
 webhookRouter.post('/bot/:botId', async (c) => {
   const botId = c.req.param('botId');
@@ -316,7 +398,7 @@ webhookRouter.post('/bot/:botId', async (c) => {
       }
 
       if (bestChunk) {
-        botReply = `Xin chào ${displayName}! Em là ${bot.name}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${bestChunk.content}`;
+        botReply = formatSmartKnowledgeReply(safeText, bestChunk.content, bot.name, displayName);
       } else {
         botReply = `Xin chào ${displayName}! Em đã nhận được tin nhắn của bạn. Em sẽ phản hồi bạn ngay ạ.`;
       }
@@ -350,7 +432,7 @@ webhookRouter.post('/bot/:botId', async (c) => {
       }
 
       if (maxScore > 0 || dbChunks.length === 1) {
-        botReply = `Xin chào ${displayName}! Em là ${bot.name}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${bestChunk.content}\n\n(💡 Mẹo: Quản trị viên có thể vào Portal mục 'Kho Tri thức' -> bấm 'Cấu hình Gemini AI' để Bot đàm thoại mượt mà và tự nhiên hơn nữa ạ!)`;
+        botReply = formatSmartKnowledgeReply(safeText, bestChunk.content, bot.name, displayName);
       } else {
         botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được câu hỏi "${safeText}". Hiện tại quán có đầy đủ thực đơn và bảng giá, bạn vui lòng hỏi cụ thể món hoặc giá để em hỗ trợ nhanh nhất nhé!`;
       }

@@ -278,7 +278,7 @@ export default function KnowledgePage() {
         `/v1/documents/${doc.id}/content`
       );
       if (res.content) {
-        setEditContent(res.content);
+        setEditContent(cleanDeduplicatedContent(res.content));
       }
       if (res.title) {
         setEditTitle(res.title);
@@ -313,11 +313,12 @@ export default function KnowledgePage() {
     setEditError('');
 
     try {
+      const cleaned = cleanDeduplicatedContent(editContent.trim());
       await fetchApi(`/v1/documents/${editingDoc.id}`, {
         method: 'PATCH',
         body: JSON.stringify({
           title: editTitle.trim(),
-          content: editContent.trim(),
+          content: cleaned,
           scope: editScope,
           bot_id: editScope === 'bot' ? editTargetBotId : null,
         }),
@@ -1127,4 +1128,43 @@ async function extractTextFromFile(file: File): Promise<string> {
 
   // Fallback to text reading
   return await file.text();
+}
+
+/**
+ * Strips out accidental duplicate lines, headings or paragraphs from text
+ */
+function cleanDeduplicatedContent(text: string): string {
+  if (!text) return '';
+  const normalized = text.replace(/\r\n/g, '\n').trim();
+  const lines = normalized.split('\n');
+  const cleanLines: string[] = [];
+  let lastNonEmpty = '';
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+
+    if (trimmed !== '') {
+      if (trimmed === lastNonEmpty) {
+        continue;
+      }
+      lastNonEmpty = trimmed;
+    }
+    cleanLines.push(raw);
+  }
+
+  const cleanText = cleanLines.join('\n');
+  const paragraphs = cleanText.split(/\n\s*\n/);
+  const cleanParas: string[] = [];
+
+  for (let i = 0; i < paragraphs.length; i++) {
+    const p = paragraphs[i].trim();
+    if (!p) continue;
+    if (cleanParas.length > 0 && cleanParas[cleanParas.length - 1] === p) {
+      continue;
+    }
+    cleanParas.push(p);
+  }
+
+  return cleanParas.join('\n\n');
 }

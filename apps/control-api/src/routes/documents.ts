@@ -2,7 +2,7 @@
 import { Hono } from 'hono';
 import { nanoid } from 'nanoid';
 import { GeminiClient } from '@zalo-baas/llm';
-import { chunkText } from '@zalo-baas/rag';
+import { chunkText, stitchChunksCleanly, deduplicateDocumentContent } from '@zalo-baas/rag';
 import { authMiddleware, requireRole } from '../auth.js';
 import type { Env, HonoVariables } from '../types.js';
 
@@ -24,16 +24,25 @@ async function ingestDocument(opts: IngestOptions) {
   const { title, content, targetBotId, tenantId, sourceType = 'upload', env } = opts;
   const docId = `doc_${nanoid(16)}`;
   const now = Date.now();
-  const rawContent = content.trim();
+  const rawContent = deduplicateDocumentContent(content.trim());
   const sizeBytes = new TextEncoder().encode(rawContent).length;
 
-  // 1. Insert document record into D1
-  await env.DB.prepare(
-    `INSERT INTO documents (id, tenant_id, bot_id, title, source_type, r2_key, size_bytes, status, chunk_count, created_at)
-     VALUES (?, ?, ?, ?, ?, '', ?, 'processing', 0, ?)`
-  )
-    .bind(docId, tenantId, targetBotId, title, sourceType, sizeBytes, now)
-    .run();
+  // 1. Insert document record into D1 (preserves original raw_content without duplicate overlap)
+  try {
+    await env.DB.prepare(
+      `INSERT INTO documents (id, tenant_id, bot_id, title, source_type, r2_key, size_bytes, status, chunk_count, raw_content, created_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, 'processing', 0, ?, ?)`
+    )
+      .bind(docId, tenantId, targetBotId, title, sourceType, sizeBytes, rawContent, now)
+      .run();
+  } catch {
+    await env.DB.prepare(
+      `INSERT INTO documents (id, tenant_id, bot_id, title, source_type, r2_key, size_bytes, status, chunk_count, created_at)
+       VALUES (?, ?, ?, ?, ?, '', ?, 'processing', 0, ?)`
+    )
+      .bind(docId, tenantId, targetBotId, title, sourceType, sizeBytes, now)
+      .run();
+  }
 
   // 2. Chunk text
   const chunks = chunkText(rawContent);
@@ -355,35 +364,73 @@ documentsRouter.delete(
   }
 );
 
-// 6. Get Document Full Content (reconstructed from chunks for viewing/editing)
+// 6. Get Document Full Content (clean original text or deduplicated reconstruction)
 documentsRouter.get('/documents/:docId/content', async (c) => {
   const user = c.get('user');
   const docId = c.req.param('docId');
 
-  const doc = await c.env.DB.prepare(
-    'SELECT id, title, bot_id, status, chunk_count, size_bytes FROM documents WHERE id = ? AND tenant_id = ?'
-  )
-    .bind(docId, user.tenant_id)
-    .first<{
-      id: string;
-      title: string;
-      bot_id: string | null;
-      status: string;
-      chunk_count: number;
-      size_bytes: number;
-    }>();
+  let doc: {
+    id: string;
+    title: string;
+    bot_id: string | null;
+    status: string;
+    chunk_count: number;
+    size_bytes: number;
+    raw_content?: string | null;
+  } | null = null;
+
+  try {
+    doc = await c.env.DB.prepare(
+      'SELECT id, title, bot_id, status, chunk_count, size_bytes, raw_content FROM documents WHERE id = ? AND tenant_id = ?'
+    )
+      .bind(docId, user.tenant_id)
+      .first();
+  } catch {
+    doc = await c.env.DB.prepare(
+      'SELECT id, title, bot_id, status, chunk_count, size_bytes FROM documents WHERE id = ? AND tenant_id = ?'
+    )
+      .bind(docId, user.tenant_id)
+      .first();
+  }
 
   if (!doc) {
     return c.json({ error: 'Tài liệu không tồn tại' }, 404);
   }
 
-  const chunkRows = await c.env.DB.prepare(
-    'SELECT content FROM chunks WHERE doc_id = ? AND tenant_id = ? ORDER BY ord ASC'
-  )
-    .bind(docId, user.tenant_id)
-    .all<{ content: string }>();
+  let fullContent = doc.raw_content ? doc.raw_content.trim() : '';
 
-  const fullContent = (chunkRows?.results || []).map((r) => r.content).join('\n\n');
+  // If raw_content is empty (for documents created prior to this update),
+  // reconstruct from chunks without overlapping duplicate sentences/headings
+  if (!fullContent) {
+    const chunkRows = await c.env.DB.prepare(
+      'SELECT content FROM chunks WHERE doc_id = ? AND tenant_id = ? ORDER BY ord ASC'
+    )
+      .bind(docId, user.tenant_id)
+      .all<{ content: string }>();
+
+    const chunks = (chunkRows?.results || []).map((r) => r.content);
+    fullContent = stitchChunksCleanly(chunks);
+
+    // Save cleaned reconstructed text as raw_content so it's permanently preserved
+    if (fullContent) {
+      try {
+        await c.env.DB.prepare('UPDATE documents SET raw_content = ? WHERE id = ?')
+          .bind(fullContent, docId)
+          .run();
+      } catch {}
+    }
+  } else {
+    // Run deduplication in case an older version already contained duplicate lines
+    const cleaned = deduplicateDocumentContent(fullContent);
+    if (cleaned !== fullContent) {
+      fullContent = cleaned;
+      try {
+        await c.env.DB.prepare('UPDATE documents SET raw_content = ? WHERE id = ?')
+          .bind(fullContent, docId)
+          .run();
+      } catch {}
+    }
+  }
 
   return c.json({
     ok: true,
@@ -440,10 +487,10 @@ documentsRouter.patch(
       }
     }
 
-    // If content is being updated, re-chunk and re-vectorize
+    // If content is being updated, clean and re-chunk and re-vectorize
     if (body.content !== undefined && body.content.trim() !== '') {
-      const newContent = body.content.trim();
-      const newSizeBytes = new TextEncoder().encode(newContent).length;
+      const cleanContent = deduplicateDocumentContent(body.content.trim());
+      const newSizeBytes = new TextEncoder().encode(cleanContent).length;
 
       // 1. Remove old chunks from Vectorize
       const oldChunks = await c.env.DB.prepare(
@@ -464,7 +511,7 @@ documentsRouter.patch(
         .run();
 
       // 3. Re-chunk text
-      const chunks = chunkText(newContent);
+      const chunks = chunkText(cleanContent);
       const vectorRecords: VectorizeVector[] = [];
 
       let activeGeminiKey = c.env.GEMINI_API_KEY || '';
@@ -528,12 +575,20 @@ documentsRouter.patch(
         }
       }
 
-      // Update doc record
-      await c.env.DB.prepare(
-        `UPDATE documents SET title = ?, bot_id = ?, size_bytes = ?, chunk_count = ?, status = 'ready' WHERE id = ? AND tenant_id = ?`
-      )
-        .bind(newTitle, targetBotId, newSizeBytes, chunks.length, docId, tenantId)
-        .run();
+      // Update doc record with raw_content preserved
+      try {
+        await c.env.DB.prepare(
+          `UPDATE documents SET title = ?, bot_id = ?, size_bytes = ?, chunk_count = ?, raw_content = ?, status = 'ready' WHERE id = ? AND tenant_id = ?`
+        )
+          .bind(newTitle, targetBotId, newSizeBytes, chunks.length, cleanContent, docId, tenantId)
+          .run();
+      } catch {
+        await c.env.DB.prepare(
+          `UPDATE documents SET title = ?, bot_id = ?, size_bytes = ?, chunk_count = ?, status = 'ready' WHERE id = ? AND tenant_id = ?`
+        )
+          .bind(newTitle, targetBotId, newSizeBytes, chunks.length, docId, tenantId)
+          .run();
+      }
     } else {
       // Just update title or bot scope
       await c.env.DB.prepare(

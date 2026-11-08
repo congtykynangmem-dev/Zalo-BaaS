@@ -105,6 +105,14 @@ function initDatabase() {
         console.log('[Zalo-BaaS] Migrated documents table to support flexible bot_id (global/bot-specific)');
       }
 
+      // Ensure documents table has raw_content column to prevent duplicate overlap on RAG edit
+      const docCols2 = db.prepare('PRAGMA table_info(documents)').all();
+      const rawContentCol = docCols2.find((c) => c.name === 'raw_content');
+      if (!rawContentCol) {
+        db.exec('ALTER TABLE documents ADD COLUMN raw_content TEXT;');
+        console.log('[Zalo-BaaS] Added raw_content column to documents table');
+      }
+
       // Ensure System Tenant exists for Platform Owner
       db.exec(`
         INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)

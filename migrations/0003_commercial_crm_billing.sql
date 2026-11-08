@@ -21,3 +21,6 @@ CREATE TABLE IF NOT EXISTS invoices (
 );
 CREATE INDEX IF NOT EXISTS idx_invoices_tenant ON invoices(tenant_id, status);
 
+-- 3. Bổ sung trường raw_content cho bảng documents để lưu trữ nguyên văn tài liệu gốc, loại bỏ lỗi trùng lặp khi sửa RAG
+ALTER TABLE documents ADD COLUMN raw_content TEXT;
+

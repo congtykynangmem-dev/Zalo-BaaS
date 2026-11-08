@@ -73,6 +73,7 @@ CREATE TABLE IF NOT EXISTS documents (
   size_bytes INTEGER NOT NULL,
   status TEXT NOT NULL DEFAULT 'pending',     -- pending | processing | ready | failed
   chunk_count INTEGER NOT NULL DEFAULT 0,
+  raw_content TEXT,
   error TEXT,
   created_at INTEGER NOT NULL
 );

@@ -1,6 +1,12 @@
 // packages/rag/src/rag.test.ts
 import { describe, it, expect } from 'vitest';
-import { chunkText, filterMatches, isGroundingSufficient } from './index.js';
+import {
+  chunkText,
+  stitchChunksCleanly,
+  deduplicateDocumentContent,
+  filterMatches,
+  isGroundingSufficient,
+} from './index.js';
 import type { VectorMatch } from './types.js';
 
 describe('packages/rag', () => {
@@ -25,6 +31,27 @@ describe('packages/rag', () => {
       const text = 'Một câu văn bản mẫu để kiểm tra tính toán số lượng tokens.';
       const chunks = chunkText(text);
       expect(chunks[0].estimatedTokens).toBeGreaterThan(0);
+    });
+  });
+
+  describe('stitchChunksCleanly and deduplicateDocumentContent', () => {
+    it('should stitch overlapping chunks without duplicating shared text', () => {
+      const c1 = '1. CỬA HÀNG\n- Tên: Five Star 41 Trần Phú\n\n2. ĐỊNH VỊ\n- Ngon bổ rẻ';
+      const c2 = '2. ĐỊNH VỊ\n- Ngon bổ rẻ\n\n3. THỰC ĐƠN\n- Gà giòn 32k';
+      const stitched = stitchChunksCleanly([c1, c2]);
+
+      expect(stitched).toContain('1. CỬA HÀNG');
+      expect(stitched).toContain('3. THỰC ĐƠN');
+      // "2. ĐỊNH VỊ" must appear ONLY ONCE, not duplicated!
+      const count = (stitched.match(/2\. ĐỊNH VỊ/g) || []).length;
+      expect(count).toBe(1);
+    });
+
+    it('should remove consecutive duplicate lines and duplicate headings', () => {
+      const input = '3. THỰC ĐƠN & BẢNG GIÁ\n\n3. THỰC ĐƠN & BẢNG GIÁ\n- Món 1: 10k\n- Món 1: 10k\n- Món 2: 20k';
+      const cleaned = deduplicateDocumentContent(input);
+
+      expect(cleaned).toBe('3. THỰC ĐƠN & BẢNG GIÁ\n\n- Món 1: 10k\n- Món 2: 20k');
     });
   });
 

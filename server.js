@@ -34,7 +34,7 @@ function initDatabase() {
       db.exec(fs.readFileSync(m2Path, 'utf8'));
     }
 
-    // Auto-migrate documents table to make bot_id nullable for global tenant knowledge
+    // Auto-migrate schema for CRM, billing, and flexible bot_id
     try {
       // Ensure tenant_settings table exists
       db.exec(`
@@ -44,6 +44,39 @@ function initDatabase() {
           updated_at INTEGER
         );
       `);
+
+      // Ensure invoices table exists
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS invoices (
+          id TEXT PRIMARY KEY,
+          tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+          plan_id TEXT NOT NULL REFERENCES plans(id),
+          amount_vnd INTEGER NOT NULL,
+          status TEXT NOT NULL DEFAULT 'pending',
+          payment_method TEXT NOT NULL DEFAULT 'vietqr',
+          transfer_content TEXT NOT NULL,
+          qr_url TEXT,
+          created_at INTEGER NOT NULL,
+          paid_at INTEGER
+        );
+        CREATE INDEX IF NOT EXISTS idx_invoices_tenant ON invoices(tenant_id, status);
+      `);
+
+      // Ensure conversations table has CRM columns
+      const convCols = db.prepare('PRAGMA table_info(conversations)').all();
+      const colNames = convCols.map((c) => c.name);
+      if (!colNames.includes('phone')) {
+        db.exec('ALTER TABLE conversations ADD COLUMN phone TEXT;');
+      }
+      if (!colNames.includes('tags')) {
+        db.exec("ALTER TABLE conversations ADD COLUMN tags TEXT DEFAULT '[]';");
+      }
+      if (!colNames.includes('notes')) {
+        db.exec('ALTER TABLE conversations ADD COLUMN notes TEXT;');
+      }
+      if (!colNames.includes('total_messages')) {
+        db.exec('ALTER TABLE conversations ADD COLUMN total_messages INTEGER DEFAULT 1;');
+      }
 
       const docCols = db.prepare('PRAGMA table_info(documents)').all();
       const botCol = docCols.find((c) => c.name === 'bot_id');

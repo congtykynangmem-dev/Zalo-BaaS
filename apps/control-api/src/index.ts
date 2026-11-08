@@ -8,6 +8,9 @@ import { conversationsRouter } from './routes/conversations.js';
 import { analyticsRouter } from './routes/analytics.js';
 import { webhookRouter } from './routes/webhook.js';
 import { settingsRouter } from './routes/settings.js';
+import { customersRouter } from './routes/customers.js';
+import { billingRouter } from './routes/billing.js';
+import { adminRouter } from './routes/admin.js';
 import type { Env, HonoVariables } from './types.js';
 
 export const app = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
@@ -42,6 +45,9 @@ app.route('/v1/settings', settingsRouter);
 app.route('/v1', documentsRouter);
 app.route('/v1', conversationsRouter);
 app.route('/v1/analytics', analyticsRouter);
+app.route('/v1/customers', customersRouter);
+app.route('/v1/billing', billingRouter);
+app.route('/v1/admin', adminRouter);
 
 // Global Error Handler to guarantee clean JSON errors
 app.onError((err, c) => {

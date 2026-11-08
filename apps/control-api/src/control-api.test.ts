@@ -87,6 +87,72 @@ describe('Control API Worker (apps/control-api)', () => {
             const tenantId = boundParams[0] as string;
             return mockTenantSettings.get(tenantId) ?? null;
           }
+          if (normSql.includes('FROM plans WHERE id = ?')) {
+            return {
+              id: boundParams[0] || 'pro',
+              name: 'Pro',
+              price_vnd: 599000,
+              max_bots: 3,
+              monthly_ai_messages: 10000,
+              max_documents: 20,
+              max_doc_mb: 25,
+              features: '{"smart_rag":true}',
+            };
+          }
+          if (normSql.includes('FROM invoices WHERE id = ?')) {
+            return {
+              id: boundParams[0] || 'inv_test',
+              invoice_id: boundParams[0] || 'inv_test',
+              tenant_id: 'tenant_1',
+              plan_id: 'pro',
+              amount_vnd: 599000,
+              status: 'pending',
+            };
+          }
+          if (normSql.includes('SELECT COUNT(*) as count FROM tenants')) {
+            return { count: 5 };
+          }
+          if (normSql.includes('SELECT COUNT(*) as count FROM users')) {
+            return { count: 12 };
+          }
+          if (normSql.includes("SELECT COUNT(*) as count FROM bots WHERE status = 'active'")) {
+            return { count: 8 };
+          }
+          if (normSql.includes('SELECT COUNT(*) as count FROM documents')) {
+            return { count: 24 };
+          }
+          if (normSql.includes('SELECT SUM(ai_messages) as total FROM usage_daily')) {
+            return { total: 15400 };
+          }
+          if (normSql.includes('SUM(p.price_vnd) as monthly_revenue')) {
+            return { monthly_revenue: 2990000 };
+          }
+          if (normSql.includes('SELECT c.id, c.tenant_id, c.bot_id, c.chat_id, c.display_name, c.phone, c.tags, c.notes')) {
+            return {
+              id: 'conv_1',
+              tenant_id: 'tenant_1',
+              bot_id: 'bot_1',
+              chat_id: 'chat_user_1',
+              display_name: 'Nguyen Van A',
+              phone: '0986000797',
+              tags: '["VIP", "Khách quen"]',
+              notes: 'Thích gà cay giòn',
+              total_messages: 12,
+              last_message_at: Date.now(),
+              state: 'bot',
+              bot_name: 'Five Star Bot',
+            };
+          }
+          if (normSql.includes('FROM documents WHERE id = ?')) {
+            return {
+              id: boundParams[0] || 'doc_1',
+              title: 'Bảng giá thực đơn',
+              bot_id: null,
+              status: 'ready',
+              chunk_count: 2,
+              size_bytes: 1024,
+            };
+          }
           return null;
         }),
         all: vi.fn(async () => {
@@ -103,6 +169,61 @@ describe('Control API Worker (apps/control-api)', () => {
             return {
               results: [
                 { day: '2026-11-07', ai_messages: 50, tokens_in: 10000, tokens_out: 3000 },
+              ],
+            };
+          }
+          if (normSql.includes('FROM plans ORDER BY price_vnd ASC')) {
+            return {
+              results: [
+                { id: 'starter', name: 'Starter', price_vnd: 199000, max_bots: 1, monthly_ai_messages: 1000, max_documents: 5, max_doc_mb: 10, features: '{}' },
+                { id: 'pro', name: 'Pro', price_vnd: 599000, max_bots: 3, monthly_ai_messages: 10000, max_documents: 20, max_doc_mb: 25, features: '{}' },
+              ],
+            };
+          }
+          if (normSql.includes('FROM conversations c') && normSql.includes('WHERE c.tenant_id = ?')) {
+            return {
+              results: [
+                {
+                  id: 'conv_1',
+                  tenant_id: 'tenant_1',
+                  bot_id: 'bot_1',
+                  chat_id: 'chat_user_1',
+                  display_name: 'Nguyen Van A',
+                  phone: '0986000797',
+                  tags: '["VIP"]',
+                  notes: 'Khách quen',
+                  total_messages: 5,
+                  last_message_at: Date.now(),
+                  state: 'bot',
+                  bot_name: 'Bot Gà Rán',
+                },
+              ],
+            };
+          }
+          if (normSql.includes('FROM tenants t') && normSql.includes('JOIN plans p')) {
+            return {
+              results: [
+                {
+                  id: 'tenant_1',
+                  name: 'Five Star Trần Phú',
+                  plan_id: 'pro',
+                  plan_name: 'Pro',
+                  price_vnd: 599000,
+                  status: 'active',
+                  contact_email: 'fivestar@gmail.com',
+                  created_at: Date.now(),
+                  bot_count: 2,
+                  doc_count: 4,
+                  ai_messages_count: 320,
+                },
+              ],
+            };
+          }
+          if (normSql.includes('FROM chunks WHERE doc_id = ?')) {
+            return {
+              results: [
+                { ord: 0, content: 'Đoạn 1: Bảng giá Five Star 41 Trần Phú' },
+                { ord: 1, content: 'Đoạn 2: Gà rán nóng giòn 8.000đ' },
               ],
             };
           }
@@ -538,5 +659,170 @@ describe('Control API Worker (apps/control-api)', () => {
     expect(menuReply).toContain('Cá viên');
     expect(menuReply).toContain('Xúc xích Phô mai');
     expect(menuReply).toContain('Đặt hàng giao tận nơi');
+  });
+
+  it('supports commercial billing: plans, vietqr invoice creation & payment confirmation', async () => {
+    const { signJwt } = await import('./auth.js');
+    const jwtToken = await signJwt(
+      {
+        id: 'user_1',
+        email: 'admin@knm.asia',
+        role: 'tenant_admin',
+        tenant_id: 'tenant_1',
+      },
+      env.JWT_SECRET
+    );
+
+    // 1. Get plans
+    const plansRes = await app.request(
+      '/v1/billing/plans',
+      {
+        headers: { Authorization: `Bearer ${jwtToken}` },
+      },
+      env
+    );
+    expect(plansRes.status).toBe(200);
+    const plansData = (await plansRes.json()) as { ok: boolean; plans: { id: string }[] };
+    expect(plansData.ok).toBe(true);
+    expect(plansData.plans.length).toBeGreaterThanOrEqual(2);
+
+    // 2. Create VietQR Payment Invoice
+    const createRes = await app.request(
+      '/v1/billing/create-payment',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${jwtToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ plan_id: 'pro' }),
+      },
+      env
+    );
+    expect(createRes.status).toBe(200);
+    const invoiceData = (await createRes.json()) as {
+      ok: boolean;
+      invoice: {
+        invoice_id: string;
+        amount_vnd: number;
+        vietqr_url: string;
+        transfer_content: string;
+      };
+    };
+    expect(invoiceData.ok).toBe(true);
+    expect(invoiceData.invoice.vietqr_url).toContain('vietqr.io');
+    expect(invoiceData.invoice.transfer_content).toContain('ZALOBAAS');
+
+    // 3. Confirm payment
+    const confirmRes = await app.request(
+      '/v1/billing/confirm-payment',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${jwtToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ invoice_id: invoiceData.invoice.invoice_id }),
+      },
+      env
+    );
+    expect(confirmRes.status).toBe(200);
+    const confirmData = (await confirmRes.json()) as { ok: boolean; plan_id: string };
+    expect(confirmData.ok).toBe(true);
+    expect(confirmData.plan_id).toBe('pro');
+  });
+
+  it('supports CRM customer listing and profile update', async () => {
+    const { signJwt } = await import('./auth.js');
+    const jwtToken = await signJwt(
+      {
+        id: 'user_1',
+        email: 'admin@knm.asia',
+        role: 'tenant_admin',
+        tenant_id: 'tenant_1',
+      },
+      env.JWT_SECRET
+    );
+
+    // 1. List customers
+    const listRes = await app.request(
+      '/v1/customers',
+      {
+        headers: { Authorization: `Bearer ${jwtToken}` },
+      },
+      env
+    );
+    expect(listRes.status).toBe(200);
+    const listData = (await listRes.json()) as { ok: boolean; customers: { id: string }[] };
+    expect(listData.ok).toBe(true);
+    expect(listData.customers.length).toBeGreaterThanOrEqual(1);
+
+    // 2. Update customer tags and notes
+    const updateRes = await app.request(
+      '/v1/customers/conv_1',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${jwtToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          phone: '0986000797',
+          tags: ['VIP', 'Khách ruột'],
+          notes: 'Ăn gà cay lúc 11h trưa',
+        }),
+      },
+      env
+    );
+    expect(updateRes.status).toBe(200);
+    const updateData = (await updateRes.json()) as { ok: boolean; customer: { phone: string } };
+    expect(updateData.ok).toBe(true);
+    expect(updateData.customer.phone).toBe('0986000797');
+  });
+
+  it('supports knowledge full content retrieval and document update', async () => {
+    const { signJwt } = await import('./auth.js');
+    const jwtToken = await signJwt(
+      {
+        id: 'user_1',
+        email: 'admin@knm.asia',
+        role: 'tenant_admin',
+        tenant_id: 'tenant_1',
+      },
+      env.JWT_SECRET
+    );
+
+    // 1. Get reconstructed content from chunks
+    const contentRes = await app.request(
+      '/v1/documents/doc_1/content',
+      {
+        headers: { Authorization: `Bearer ${jwtToken}` },
+      },
+      env
+    );
+    expect(contentRes.status).toBe(200);
+    const contentData = (await contentRes.json()) as { ok: boolean; content: string };
+    expect(contentData.ok).toBe(true);
+    expect(contentData.content).toContain('Five Star 41 Trần Phú');
+
+    // 2. Update document title and scope
+    const patchRes = await app.request(
+      '/v1/documents/doc_1',
+      {
+        method: 'PATCH',
+        headers: {
+          Authorization: `Bearer ${jwtToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          title: 'Bảng giá mới 2026',
+          scope: 'all',
+        }),
+      },
+      env
+    );
+    expect(patchRes.status).toBe(200);
+    const patchData = (await patchRes.json()) as { ok: boolean };
+    expect(patchData.ok).toBe(true);
   });
 });

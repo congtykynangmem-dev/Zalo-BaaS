@@ -13,6 +13,8 @@ import {
   Building,
   User,
   ShieldCheck,
+  Users,
+  CreditCard,
 } from 'lucide-react';
 
 export default function DashboardLayout({
@@ -45,9 +47,14 @@ export default function DashboardLayout({
       icon: Bot,
     },
     {
-      name: 'Kho Tri thức',
+      name: 'Kho Tri thức & RAG',
       href: '/dashboard/knowledge',
       icon: BookOpen,
+    },
+    {
+      name: 'Khách hàng CRM',
+      href: '/dashboard/customers',
+      icon: Users,
     },
     {
       name: 'Hộp thư Hội thoại',
@@ -55,10 +62,24 @@ export default function DashboardLayout({
       icon: MessageSquare,
     },
     {
+      name: 'Gói cước & Nâng cấp',
+      href: '/dashboard/billing',
+      icon: CreditCard,
+    },
+    {
       name: 'Thống kê & Quota',
       href: '/dashboard/analytics',
       icon: BarChart3,
     },
+    ...(user.role === 'platform_owner'
+      ? [
+          {
+            name: 'Quản trị Hệ thống',
+            href: '/dashboard/admin',
+            icon: ShieldCheck,
+          },
+        ]
+      : []),
   ];
 
   return (

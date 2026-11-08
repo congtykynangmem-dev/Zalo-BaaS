@@ -59,6 +59,33 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
     botToken = botToken.substring(3);
   }
 
+  // Commercial Quota Check: Max bots per plan
+  try {
+    const planRow = await c.env.DB.prepare(
+      'SELECT p.max_bots, p.name FROM tenants t JOIN plans p ON t.plan_id = p.id WHERE t.id = ?'
+    )
+      .bind(user.tenant_id)
+      .first<{ max_bots: number; name: string }>();
+
+    if (planRow && planRow.max_bots > 0) {
+      const botCountRow = await c.env.DB.prepare(
+        "SELECT COUNT(*) as cnt FROM bots WHERE tenant_id = ? AND status != 'deleted'"
+      )
+        .bind(user.tenant_id)
+        .first<{ cnt: number }>();
+
+      if (botCountRow && botCountRow.cnt >= planRow.max_bots) {
+        return c.json(
+          {
+            error: `Gói cước ${planRow.name} giới hạn tối đa ${planRow.max_bots} Bot. Vui lòng nâng cấp gói cước để thêm Bot mới!`,
+            code: 'QUOTA_EXCEEDED',
+          },
+          403
+        );
+      }
+    }
+  } catch {}
+
   // 1.1. Test and verify bot token with Zalo Bot Platform
   const zaloClient = new ZaloBotClient(botToken);
   let profile;

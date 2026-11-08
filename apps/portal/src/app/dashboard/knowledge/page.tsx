@@ -20,6 +20,7 @@ import {
   Sparkles,
   Key,
   ExternalLink,
+  Edit3,
 } from 'lucide-react';
 
 interface BotItem {
@@ -56,6 +57,17 @@ export default function KnowledgePage() {
   const [parsingFile, setParsingFile] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [error, setError] = useState('');
+
+  // Edit modal state
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editingDoc, setEditingDoc] = useState<DocItem | null>(null);
+  const [editTitle, setEditTitle] = useState('');
+  const [editContent, setEditContent] = useState('');
+  const [editScope, setEditScope] = useState<'all' | 'bot'>('all');
+  const [editTargetBotId, setEditTargetBotId] = useState<string>('');
+  const [loadingEditContent, setLoadingEditContent] = useState(false);
+  const [savingEdit, setSavingEdit] = useState(false);
+  const [editError, setEditError] = useState('');
 
   // AI Configuration state
   const [aiConfigured, setAiConfigured] = useState(false);
@@ -250,6 +262,77 @@ export default function KnowledgePage() {
     }
   };
 
+  // 6. Open edit document modal and fetch full text
+  const handleOpenEditModal = async (doc: DocItem) => {
+    setEditingDoc(doc);
+    setEditTitle(doc.title);
+    setEditScope(doc.bot_id ? 'bot' : 'all');
+    setEditTargetBotId(doc.bot_id || (bots[0]?.id || ''));
+    setEditContent('');
+    setEditError('');
+    setShowEditModal(true);
+    setLoadingEditContent(true);
+
+    try {
+      const res = await fetchApi<{ ok: boolean; title: string; content: string; bot_id: string | null }>(
+        `/v1/documents/${doc.id}/content`
+      );
+      if (res.content) {
+        setEditContent(res.content);
+      }
+      if (res.title) {
+        setEditTitle(res.title);
+      }
+      if (res.bot_id) {
+        setEditScope('bot');
+        setEditTargetBotId(res.bot_id);
+      } else {
+        setEditScope('all');
+      }
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Không thể tải nội dung tài liệu');
+    } finally {
+      setLoadingEditContent(false);
+    }
+  };
+
+  // 7. Save edited document & re-vectorize
+  const handleSaveEditDocument = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingDoc) return;
+    if (!editTitle.trim() || !editContent.trim()) {
+      setEditError('Vui lòng nhập đầy đủ tiêu đề và nội dung.');
+      return;
+    }
+    if (editScope === 'bot' && !editTargetBotId) {
+      setEditError('Vui lòng chọn Bot áp dụng.');
+      return;
+    }
+
+    setSavingEdit(true);
+    setEditError('');
+
+    try {
+      await fetchApi(`/v1/documents/${editingDoc.id}`, {
+        method: 'PATCH',
+        body: JSON.stringify({
+          title: editTitle.trim(),
+          content: editContent.trim(),
+          scope: editScope,
+          bot_id: editScope === 'bot' ? editTargetBotId : null,
+        }),
+      });
+
+      setShowEditModal(false);
+      setEditingDoc(null);
+      await loadDocs(filterScope);
+    } catch (err: unknown) {
+      setEditError(err instanceof Error ? err.message : 'Lỗi cập nhật tài liệu');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
   return (
     <div>
       {/* Page Header */}
@@ -396,12 +479,22 @@ export default function KnowledgePage() {
                     {new Date(doc.created_at).toLocaleDateString('vi-VN')}
                   </td>
                   <td className="py-4 px-6 text-right">
-                    <button
-                      onClick={() => handleDeleteDoc(doc.id)}
-                      className="text-red-500 hover:text-red-700 font-medium inline-flex items-center gap-1 hover:underline"
-                    >
-                      <Trash2 className="h-3.5 w-3.5" /> Xóa
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={() => handleOpenEditModal(doc)}
+                        className="text-blue-600 hover:text-blue-800 font-medium inline-flex items-center gap-1 hover:underline"
+                        title="Chỉnh sửa nội dung & phạm vi tài liệu"
+                      >
+                        <Edit3 className="h-3.5 w-3.5" /> Sửa
+                      </button>
+                      <button
+                        onClick={() => handleDeleteDoc(doc.id)}
+                        className="text-red-500 hover:text-red-700 font-medium inline-flex items-center gap-1 hover:underline"
+                        title="Xóa tài liệu và các vector tìm kiếm"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" /> Xóa
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -753,6 +846,184 @@ export default function KnowledgePage() {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* --- EDIT DOCUMENT MODAL --- */}
+      {showEditModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/50 p-4 backdrop-blur-sm overflow-y-auto">
+          <div className="w-full max-w-2xl rounded-2xl bg-white p-6 shadow-2xl border border-slate-100 my-8">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-4 mb-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                  <Edit3 className="h-5 w-5 text-blue-600" />
+                  Chỉnh sửa Kho Tri thức & Cập nhật RAG
+                </h2>
+                <p className="text-xs text-slate-500">
+                  Cập nhật nội dung, giá sản phẩm, chính sách hoặc thay đổi phạm vi bot áp dụng
+                </p>
+              </div>
+              <button
+                onClick={() => setShowEditModal(false)}
+                className="text-slate-400 hover:text-slate-600 text-lg font-bold"
+              >
+                ✕
+              </button>
+            </div>
+
+            {editError && (
+              <div className="mb-4 rounded-xl bg-red-50 p-3 text-xs text-red-600 border border-red-100">
+                {editError}
+              </div>
+            )}
+
+            {loadingEditContent ? (
+              <div className="py-12 flex flex-col items-center justify-center gap-3 text-slate-500">
+                <Clock className="h-6 w-6 animate-spin text-blue-600" />
+                <span className="text-xs">Đang tải toàn bộ nội dung từ vector store...</span>
+              </div>
+            ) : (
+              <form onSubmit={handleSaveEditDocument} className="space-y-4">
+                {/* 1. Scope Selection */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
+                    Phạm vi áp dụng tài liệu <span className="text-red-500">*</span>
+                  </label>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <label
+                      className={`flex items-start gap-3 p-3 rounded-xl border text-xs cursor-pointer transition ${
+                        editScope === 'all'
+                          ? 'border-blue-600 bg-blue-50/60 text-blue-950 font-semibold'
+                          : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="editScope"
+                        value="all"
+                        checked={editScope === 'all'}
+                        onChange={() => setEditScope('all')}
+                        className="mt-0.5 text-blue-600 focus:ring-blue-500"
+                      />
+                      <div>
+                        <div className="flex items-center gap-1.5 font-bold text-slate-900">
+                          <Globe className="h-3.5 w-3.5 text-emerald-600" />
+                          <span>Dùng chung (Toàn tổ chức)</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 font-normal">
+                          Mọi Zalo Bot trong tổ chức đều có quyền truy xuất tài liệu này
+                        </p>
+                      </div>
+                    </label>
+
+                    <label
+                      className={`flex items-start gap-3 p-3 rounded-xl border text-xs cursor-pointer transition ${
+                        editScope === 'bot'
+                          ? 'border-blue-600 bg-blue-50/60 text-blue-950 font-semibold'
+                          : 'border-slate-200 hover:bg-slate-50 text-slate-600'
+                      }`}
+                    >
+                      <input
+                        type="radio"
+                        name="editScope"
+                        value="bot"
+                        checked={editScope === 'bot'}
+                        onChange={() => setEditScope('bot')}
+                        className="mt-0.5 text-blue-600 focus:ring-blue-500"
+                      />
+                      <div>
+                        <div className="flex items-center gap-1.5 font-bold text-slate-900">
+                          <Bot className="h-3.5 w-3.5 text-indigo-600" />
+                          <span>Áp dụng riêng cho từng Bot</span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5 font-normal">
+                          Chỉ bot được chỉ định mới đọc được kiến thức này
+                        </p>
+                      </div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Bot dropdown if scope === 'bot' */}
+                {editScope === 'bot' && (
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                      Chọn Zalo Bot áp dụng <span className="text-red-500">*</span>
+                    </label>
+                    <select
+                      value={editTargetBotId}
+                      onChange={(e) => setEditTargetBotId(e.target.value)}
+                      className="w-full rounded-xl border border-slate-200 p-2.5 text-xs font-medium focus:border-blue-600 focus:outline-none"
+                    >
+                      <option value="">-- Chọn Bot áp dụng --</option>
+                      {bots.map((b) => (
+                        <option key={b.id} value={b.id}>
+                          🤖 {b.name} ({b.id.slice(0, 8)}...)
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {/* 2. Document Title */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Tiêu đề tài liệu <span className="text-red-500">*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={editTitle}
+                    onChange={(e) => setEditTitle(e.target.value)}
+                    placeholder="VD: Bảng giá thực đơn cập nhật 2026..."
+                    className="w-full rounded-xl border border-slate-200 p-2.5 text-xs focus:border-blue-600 focus:outline-none"
+                  />
+                </div>
+
+                {/* 3. Document Content */}
+                <div>
+                  <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1">
+                    Nội dung kiến thức (Markdown / Văn bản) <span className="text-red-500">*</span>
+                  </label>
+                  <textarea
+                    rows={10}
+                    value={editContent}
+                    onChange={(e) => setEditContent(e.target.value)}
+                    placeholder="Chỉnh sửa nội dung chi tiết..."
+                    className="w-full rounded-xl border border-slate-200 p-3 text-xs font-mono leading-relaxed focus:border-blue-600 focus:outline-none resize-y"
+                  />
+                  <p className="mt-1 text-[11px] text-slate-400">
+                    ⚡ Hệ thống sẽ tự động cắt nhỏ đoạn (chunking) và tính toán vector embeddings mới ngay khi bấm Lưu.
+                  </p>
+                </div>
+
+                {/* Submit button */}
+                <div className="mt-6 flex justify-end gap-3 pt-4 border-t border-slate-100">
+                  <button
+                    type="button"
+                    onClick={() => setShowEditModal(false)}
+                    className="rounded-xl border border-slate-200 px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-50 transition"
+                  >
+                    Hủy
+                  </button>
+                  <button
+                    type="submit"
+                    disabled={savingEdit}
+                    className="rounded-xl bg-blue-600 px-5 py-2 text-xs font-semibold text-white hover:bg-blue-700 disabled:opacity-50 transition flex items-center gap-2"
+                  >
+                    {savingEdit ? (
+                      <>
+                        <Clock className="h-3.5 w-3.5 animate-spin" /> Đang cập nhật & Vector hóa...
+                      </>
+                    ) : (
+                      <>
+                        <CheckCircle2 className="h-3.5 w-3.5" /> Lưu thay đổi RAG
+                      </>
+                    )}
+                  </button>
+                </div>
+              </form>
+            )}
           </div>
         </div>
       )}

@@ -201,6 +201,33 @@ documentsRouter.post(
       return c.json({ error: 'Tiêu đề và nội dung tài liệu là bắt buộc' }, 400);
     }
 
+    // Commercial Quota Check: Document limit per plan
+    try {
+      const planRow = await c.env.DB.prepare(
+        'SELECT p.max_documents, p.name FROM tenants t JOIN plans p ON t.plan_id = p.id WHERE t.id = ?'
+      )
+        .bind(tenantId)
+        .first<{ max_documents: number; name: string }>();
+
+      if (planRow && planRow.max_documents > 0) {
+        const countRow = await c.env.DB.prepare(
+          'SELECT COUNT(*) as cnt FROM documents WHERE tenant_id = ?'
+        )
+          .bind(tenantId)
+          .first<{ cnt: number }>();
+
+        if (countRow && countRow.cnt >= planRow.max_documents) {
+          return c.json(
+            {
+              error: `Gói cước ${planRow.name} giới hạn tối đa ${planRow.max_documents} tài liệu. Vui lòng nâng cấp gói cước để nạp thêm!`,
+              code: 'QUOTA_EXCEEDED',
+            },
+            403
+          );
+        }
+      }
+    } catch {}
+
     let targetBotId: string | null = null;
     const isBotScope = body.scope === 'bot' || (body.bot_id && body.bot_id !== 'all' && body.bot_id !== 'global');
 
@@ -325,5 +352,207 @@ documentsRouter.delete(
       .run();
 
     return c.json({ ok: true, message: 'Document deleted successfully' });
+  }
+);
+
+// 6. Get Document Full Content (reconstructed from chunks for viewing/editing)
+documentsRouter.get('/documents/:docId/content', async (c) => {
+  const user = c.get('user');
+  const docId = c.req.param('docId');
+
+  const doc = await c.env.DB.prepare(
+    'SELECT id, title, bot_id, status, chunk_count, size_bytes FROM documents WHERE id = ? AND tenant_id = ?'
+  )
+    .bind(docId, user.tenant_id)
+    .first<{
+      id: string;
+      title: string;
+      bot_id: string | null;
+      status: string;
+      chunk_count: number;
+      size_bytes: number;
+    }>();
+
+  if (!doc) {
+    return c.json({ error: 'Tài liệu không tồn tại' }, 404);
+  }
+
+  const chunkRows = await c.env.DB.prepare(
+    'SELECT content FROM chunks WHERE doc_id = ? AND tenant_id = ? ORDER BY ord ASC'
+  )
+    .bind(docId, user.tenant_id)
+    .all<{ content: string }>();
+
+  const fullContent = (chunkRows?.results || []).map((r) => r.content).join('\n\n');
+
+  return c.json({
+    ok: true,
+    document: doc,
+    content: fullContent,
+  });
+});
+
+// 7. Update Document (Title, Scope, and/or Content with Re-Vectorization)
+documentsRouter.patch(
+  '/documents/:docId',
+  requireRole(['tenant_admin', 'platform_owner']),
+  async (c) => {
+    const user = c.get('user');
+    const docId = c.req.param('docId');
+    if (!user.tenant_id) {
+      return c.json({ error: 'Tenant không hợp lệ' }, 400);
+    }
+    const tenantId = user.tenant_id;
+
+    const doc = await c.env.DB.prepare(
+      'SELECT id, title, bot_id FROM documents WHERE id = ? AND tenant_id = ?'
+    )
+      .bind(docId, tenantId)
+      .first<{ id: string; title: string; bot_id: string | null }>();
+
+    if (!doc) {
+      return c.json({ error: 'Tài liệu không tồn tại' }, 404);
+    }
+
+    const body = await c.req.json<{
+      title?: string;
+      content?: string;
+      scope?: 'all' | 'bot';
+      bot_id?: string | null;
+    }>();
+
+    const newTitle = body.title && body.title.trim() ? body.title.trim() : doc.title;
+    let targetBotId: string | null = doc.bot_id;
+
+    if (body.scope === 'all') {
+      targetBotId = null;
+    } else if (body.scope === 'bot' || body.bot_id !== undefined) {
+      if (body.bot_id && body.bot_id !== 'all' && body.bot_id !== 'global') {
+        const bot = await c.env.DB.prepare('SELECT id FROM bots WHERE id = ? AND tenant_id = ?')
+          .bind(body.bot_id, tenantId)
+          .first();
+        if (!bot) {
+          return c.json({ error: 'Bot được chọn không tồn tại' }, 404);
+        }
+        targetBotId = body.bot_id;
+      } else {
+        targetBotId = null;
+      }
+    }
+
+    // If content is being updated, re-chunk and re-vectorize
+    if (body.content !== undefined && body.content.trim() !== '') {
+      const newContent = body.content.trim();
+      const newSizeBytes = new TextEncoder().encode(newContent).length;
+
+      // 1. Remove old chunks from Vectorize
+      const oldChunks = await c.env.DB.prepare(
+        'SELECT id FROM chunks WHERE doc_id = ? AND tenant_id = ?'
+      )
+        .bind(docId, tenantId)
+        .all<{ id: string }>();
+
+      if (c.env.VECTORS && oldChunks.results.length > 0) {
+        try {
+          await c.env.VECTORS.deleteByIds(oldChunks.results.map((r) => r.id));
+        } catch {}
+      }
+
+      // 2. Delete old chunks from DB
+      await c.env.DB.prepare('DELETE FROM chunks WHERE doc_id = ? AND tenant_id = ?')
+        .bind(docId, tenantId)
+        .run();
+
+      // 3. Re-chunk text
+      const chunks = chunkText(newContent);
+      const vectorRecords: VectorizeVector[] = [];
+
+      let activeGeminiKey = c.env.GEMINI_API_KEY || '';
+      try {
+        const keyRow = await c.env.DB.prepare(
+          'SELECT gemini_api_key FROM tenant_settings WHERE tenant_id = ?'
+        )
+          .bind(tenantId)
+          .first<{ gemini_api_key: string }>();
+        if (keyRow?.gemini_api_key && keyRow.gemini_api_key.trim()) {
+          activeGeminiKey = keyRow.gemini_api_key.trim();
+        }
+      } catch {}
+
+      const gemini = activeGeminiKey ? new GeminiClient(activeGeminiKey) : null;
+
+      for (const chunk of chunks) {
+        const chunkId = `chk_${nanoid(16)}`;
+
+        await c.env.DB.prepare(
+          `INSERT INTO chunks (id, tenant_id, bot_id, doc_id, ord, content, token_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?)`
+        )
+          .bind(
+            chunkId,
+            tenantId,
+            targetBotId,
+            docId,
+            chunk.ord,
+            chunk.content,
+            chunk.estimatedTokens
+          )
+          .run();
+
+        if (gemini) {
+          try {
+            const embedResult = await gemini.embedContent({ text: chunk.content });
+            vectorRecords.push({
+              id: chunkId,
+              values: embedResult.values,
+              metadata: {
+                tenant_id: tenantId,
+                bot_id: targetBotId || 'all',
+                doc_id: docId || '',
+                chunk_id: chunkId,
+                title: newTitle,
+                content: chunk.content,
+              },
+            });
+          } catch (embedErr) {
+            console.warn('[Doc Re-Ingestion] Embedding warning:', embedErr);
+          }
+        }
+      }
+
+      if (c.env.VECTORS && vectorRecords.length > 0) {
+        try {
+          await c.env.VECTORS.upsert(vectorRecords);
+        } catch (vecErr) {
+          console.warn('[Doc Re-Ingestion] Vectorize upsert warning:', vecErr);
+        }
+      }
+
+      // Update doc record
+      await c.env.DB.prepare(
+        `UPDATE documents SET title = ?, bot_id = ?, size_bytes = ?, chunk_count = ?, status = 'ready' WHERE id = ? AND tenant_id = ?`
+      )
+        .bind(newTitle, targetBotId, newSizeBytes, chunks.length, docId, tenantId)
+        .run();
+    } else {
+      // Just update title or bot scope
+      await c.env.DB.prepare(
+        `UPDATE documents SET title = ?, bot_id = ? WHERE id = ? AND tenant_id = ?`
+      )
+        .bind(newTitle, targetBotId, docId, tenantId)
+        .run();
+
+      // Update bot_id in chunks
+      await c.env.DB.prepare(
+        `UPDATE chunks SET bot_id = ? WHERE doc_id = ? AND tenant_id = ?`
+      )
+        .bind(targetBotId, docId, tenantId)
+        .run();
+    }
+
+    return c.json({
+      ok: true,
+      message: 'Tài liệu đã được cập nhật và vector hóa lại thành công!',
+    });
   }
 );

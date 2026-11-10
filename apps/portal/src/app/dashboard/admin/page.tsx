@@ -83,12 +83,23 @@ export default function AdminPage() {
   const loadAdminData = async () => {
     setLoading(true);
     try {
-      const [overviewRes, tenantsRes] = await Promise.all([
-        fetchApi<{ ok: boolean; stats: AdminStats }>('/v1/admin/overview'),
-        fetchApi<{ ok: boolean; tenants: TenantItem[] }>('/v1/admin/tenants'),
-      ]);
-      setStats(overviewRes.stats || null);
-      setTenants(tenantsRes.tenants || []);
+      try {
+        const overviewRes = await fetchApi<{ ok: boolean; stats: AdminStats }>('/v1/admin/overview');
+        if (overviewRes?.stats) {
+          setStats(overviewRes.stats);
+        }
+      } catch (e) {
+        console.warn('Failed to load admin overview:', e);
+      }
+
+      try {
+        const tenantsRes = await fetchApi<{ ok: boolean; tenants: TenantItem[] }>('/v1/admin/tenants');
+        if (tenantsRes?.tenants) {
+          setTenants(tenantsRes.tenants);
+        }
+      } catch (e) {
+        console.warn('Failed to load admin tenants:', e);
+      }
     } catch (err) {
       console.error('Failed to load admin data:', err);
     } finally {
@@ -299,7 +310,9 @@ export default function AdminPage() {
                           ? 'bg-purple-50 text-purple-700 border border-purple-200'
                           : t.plan_id === 'pro'
                           ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                          : 'bg-slate-100 text-slate-700 border border-slate-200'
+                          : t.plan_id === 'trial'
+                          ? 'bg-amber-50 text-amber-700 border border-amber-200'
+                          : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
                       }`}
                     >
                       {t.plan_name}
@@ -459,9 +472,10 @@ export default function AdminPage() {
                   onChange={(e) => setNewPlanId(e.target.value)}
                   className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
                 >
-                  <option value="starter">Starter (199.000 đ/tháng)</option>
-                  <option value="pro">Pro (599.000 đ/tháng)</option>
-                  <option value="enterprise">Enterprise (1.990.000 đ/tháng)</option>
+                  <option value="trial">Dùng thử (7 ngày - Miễn phí 0 đ - 1 Bot)</option>
+                  <option value="starter">Starter (99.000 đ/tháng - 1 Bot)</option>
+                  <option value="pro">Pro (299.000 đ/tháng - 3 Bots)</option>
+                  <option value="enterprise">Enterprise (499.000 đ/tháng - 5 Bots)</option>
                 </select>
               </div>
 
@@ -528,9 +542,10 @@ export default function AdminPage() {
                   onChange={(e) => setEditPlanId(e.target.value)}
                   className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
                 >
-                  <option value="starter">Starter (1 Bot, 5 Docs, 1.000 msgs)</option>
-                  <option value="pro">Pro (3 Bots, 20 Docs, 10.000 msgs)</option>
-                  <option value="enterprise">Enterprise (10 Bots, 100 Docs, 50.000 msgs)</option>
+                  <option value="trial">Dùng thử (7 ngày - 1 Bot, 3 Docs, 1.000 msgs)</option>
+                  <option value="starter">Starter (99.000 đ/tháng - 1 Bot, 10 Docs, 3.000 msgs)</option>
+                  <option value="pro">Pro (299.000 đ/tháng - 3 Bots, 30 Docs, 15.000 msgs)</option>
+                  <option value="enterprise">Enterprise (499.000 đ/tháng - 5 Bots, 100 Docs, 50.000 msgs)</option>
                 </select>
               </div>
 

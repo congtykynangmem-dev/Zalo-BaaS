@@ -88,14 +88,27 @@ describe('Control API Worker (apps/control-api)', () => {
             return mockTenantSettings.get(tenantId) ?? null;
           }
           if (normSql.includes('FROM plans WHERE id = ?')) {
+            const planId = boundParams[0] as string;
+            if (planId === 'trial') {
+              return {
+                id: 'trial',
+                name: 'Dùng thử 7 ngày',
+                price_vnd: 0,
+                max_bots: 1,
+                monthly_ai_messages: 1000,
+                max_documents: 3,
+                max_doc_mb: 5,
+                features: '{"trial_days":7}',
+              };
+            }
             return {
               id: boundParams[0] || 'pro',
               name: 'Pro',
-              price_vnd: 599000,
+              price_vnd: 299000,
               max_bots: 3,
-              monthly_ai_messages: 10000,
-              max_documents: 20,
-              max_doc_mb: 25,
+              monthly_ai_messages: 15000,
+              max_documents: 30,
+              max_doc_mb: 50,
               features: '{"smart_rag":true}',
             };
           }
@@ -617,6 +630,10 @@ describe('Control API Worker (apps/control-api)', () => {
 |:---|:---|:---|:---|
 | Cá viên | 8.000đ | Xiên | Món quốc dân giá rẻ nhất quán |
 | Bò viên | 9.000đ | Xiên | Dai giòn sần sật |
+| Gà giòn truyền thống | 32.000đ | Miếng | Giòn rụm đậm đà |
+| Gà giòn cay | 32.000đ | Miếng | Cay tê hấp dẫn |
+| Gà giòn giòn | 35.000đ | Miếng | Siêu giòn đặc biệt |
+| Cánh gà chiên nước mắm | 34.000đ | Phần | Thơm lừng nước mắm |
 | Xúc xích Phô mai | 9.000đ | Xiên | Nhân phô mai tan chảy |
 | Phô mai que | 10.000đ | Que | Kéo sợi béo ngậy |
 | Xúc xích Torpedo truyền thống | 12.000đ | Que | Đậm vị thịt |
@@ -646,6 +663,43 @@ describe('Control API Worker (apps/control-api)', () => {
 
     // Should include upsell suggestion
     expect(sausageReply).toContain('Gợi ý thêm');
+
+    // 1.1 Customer asks "giá gà của cửa hàng?" (Fuzzy keyword match across all chicken products)
+    const chickenGeneralReply = formatSmartKnowledgeReply(
+      'giá gà của cửa hàng?',
+      sampleTable,
+      'Five Star - 41 Trần Phú',
+      'Mr Bửu'
+    );
+    expect(chickenGeneralReply).toContain('Gà giòn truyền thống');
+    expect(chickenGeneralReply).toContain('Gà giòn cay');
+    expect(chickenGeneralReply).toContain('Gà giòn giòn');
+    expect(chickenGeneralReply).toContain('Cánh gà chiên nước mắm');
+    expect(chickenGeneralReply).not.toContain('Cá viên');
+    expect(chickenGeneralReply).not.toContain('Xúc xích');
+
+    // 1.2 Customer asks "giá gà giòn?" (Fuzzy match "gà giòn giòn", "gà giòn truyền thống", "gà giòn cay")
+    const crispyChickenReply = formatSmartKnowledgeReply(
+      'giá gà giòn?',
+      sampleTable,
+      'Five Star - 41 Trần Phú',
+      'Mr Bửu'
+    );
+    expect(crispyChickenReply).toContain('Gà giòn giòn');
+    expect(crispyChickenReply).toContain('Gà giòn truyền thống');
+    expect(crispyChickenReply).toContain('Gà giòn cay');
+    expect(crispyChickenReply).not.toContain('Cá viên');
+    expect(crispyChickenReply).not.toContain('Bò viên');
+
+    // 1.3 Customer asks "gà giòn giòn"
+    const superCrispyReply = formatSmartKnowledgeReply(
+      'gà giòn giòn',
+      sampleTable,
+      'Five Star - 41 Trần Phú',
+      'Mr Bửu'
+    );
+    expect(superCrispyReply).toContain('Gà giòn giòn');
+    expect(superCrispyReply).toContain('35.000đ');
 
     // 2. Customer asks for full menu
     const menuReply = formatSmartKnowledgeReply(
@@ -869,5 +923,59 @@ KHO TRI THỨC & QUY TẮC VẬN HÀNH: GÀ RÁN FIVE STAR - 41 TRẦN PHÚ
     expect(patchRes.status).toBe(200);
     const patchData = (await patchRes.json()) as { ok: boolean };
     expect(patchData.ok).toBe(true);
+  });
+
+  it('supports tenant-wide analytics overview and instant free trial activation', async () => {
+    const { signJwt } = await import('./auth.js');
+    const jwtToken = await signJwt(
+      {
+        id: 'user_1',
+        email: 'admin@knm.asia',
+        role: 'tenant_admin',
+        tenant_id: 'tenant_1',
+      },
+      env.JWT_SECRET
+    );
+
+    // 1. Get tenant analytics overview
+    const overviewRes = await app.request(
+      '/v1/analytics/overview',
+      {
+        headers: { Authorization: `Bearer ${jwtToken}` },
+      },
+      env
+    );
+    expect(overviewRes.status).toBe(200);
+    const overviewData = (await overviewRes.json()) as {
+      ok: boolean;
+      usage: { ai_messages: number; quota_percent: number };
+      plan: { name: string; monthly_limit: number };
+    };
+    expect(overviewData.ok).toBe(true);
+    expect(overviewData.plan.name).toBe('Starter');
+    expect(overviewData.usage.quota_percent).toBeGreaterThanOrEqual(0);
+
+    // 2. Activate free 7-day trial without VietQR
+    const trialRes = await app.request(
+      '/v1/billing/create-payment',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${jwtToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ plan_id: 'trial' }),
+      },
+      env
+    );
+    expect(trialRes.status).toBe(200);
+    const trialData = (await trialRes.json()) as {
+      ok: boolean;
+      trial_activated: boolean;
+      plan_id: string;
+    };
+    expect(trialData.ok).toBe(true);
+    expect(trialData.trial_activated).toBe(true);
+    expect(trialData.plan_id).toBe('trial');
   });
 });

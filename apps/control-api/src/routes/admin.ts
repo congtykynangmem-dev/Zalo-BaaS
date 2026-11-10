@@ -11,69 +11,92 @@ adminRouter.use('*', authMiddleware, requireRole(['platform_owner']));
 
 // 1. System Overview Metrics
 adminRouter.get('/overview', async (c) => {
-  const tenantsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM tenants').first<{ count: number }>();
-  const usersCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>();
-  const botsCount = await c.env.DB.prepare("SELECT COUNT(*) as count FROM bots WHERE status = 'active'").first<{ count: number }>();
-  const docsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM documents').first<{ count: number }>();
-  const totalAi = await c.env.DB.prepare('SELECT SUM(ai_messages) as total FROM usage_daily').first<{ total: number | null }>();
+  try {
+    const tenantsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM tenants').first<{ count: number }>().catch(() => ({ count: 0 }));
+    const usersCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>().catch(() => ({ count: 0 }));
+    const botsCount = await c.env.DB.prepare("SELECT COUNT(*) as count FROM bots WHERE status = 'active'").first<{ count: number }>().catch(() => ({ count: 0 }));
+    const docsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM documents').first<{ count: number }>().catch(() => ({ count: 0 }));
+    const totalAi = await c.env.DB.prepare('SELECT SUM(ai_messages) as total FROM usage_daily').first<{ total: number | null }>().catch(() => ({ total: 0 }));
 
-  // Revenue estimation
-  const revenueRow = await c.env.DB.prepare(`
-    SELECT SUM(p.price_vnd) as monthly_revenue
-    FROM tenants t
-    JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
-    WHERE t.status = 'active' AND p.price_vnd > 0
-  `).first<{ monthly_revenue: number | null }>();
+    // Revenue estimation
+    const revenueRow = await c.env.DB.prepare(`
+      SELECT SUM(p.price_vnd) as monthly_revenue
+      FROM tenants t
+      JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
+      WHERE t.status = 'active' AND p.price_vnd > 0
+    `).first<{ monthly_revenue: number | null }>().catch(() => ({ monthly_revenue: 0 }));
 
-  return c.json({
-    ok: true,
-    stats: {
-      total_tenants: tenantsCount?.count || 0,
-      total_users: usersCount?.count || 0,
-      total_active_bots: botsCount?.count || 0,
-      total_documents: docsCount?.count || 0,
-      total_ai_messages: totalAi?.total || 0,
-      monthly_revenue_vnd: revenueRow?.monthly_revenue || 0,
-    },
-  });
+    return c.json({
+      ok: true,
+      stats: {
+        total_tenants: tenantsCount?.count || 0,
+        total_users: usersCount?.count || 0,
+        total_active_bots: botsCount?.count || 0,
+        total_documents: docsCount?.count || 0,
+        total_ai_messages: totalAi?.total || 0,
+        monthly_revenue_vnd: revenueRow?.monthly_revenue || 0,
+      },
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({
+      ok: true,
+      stats: {
+        total_tenants: 0,
+        total_users: 0,
+        total_active_bots: 0,
+        total_documents: 0,
+        total_ai_messages: 0,
+        monthly_revenue_vnd: 0,
+      },
+      warning: msg,
+    });
+  }
 });
 
 // 2. List All Tenants with Detailed Quota & Stats
 adminRouter.get('/tenants', async (c) => {
-  const rows = await c.env.DB.prepare(`
-    SELECT t.id, t.name, t.plan_id, t.status, t.contact_email, t.created_at,
-           COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
-           COALESCE(p.price_vnd, 0) as price_vnd,
-           COALESCE(p.max_bots, 1) as max_bots,
-           COALESCE(p.max_documents, 5) as max_documents,
-           COALESCE(p.monthly_ai_messages, 1000) as monthly_ai_messages,
-           (SELECT COUNT(*) FROM bots b WHERE b.tenant_id = t.id AND b.status != 'deleted') as bot_count,
-           (SELECT COUNT(*) FROM documents d WHERE d.tenant_id = t.id) as doc_count,
-           (SELECT COALESCE(SUM(u.ai_messages), 0) FROM usage_daily u WHERE u.tenant_id = t.id) as ai_messages_count
-    FROM tenants t
-    LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
-    ORDER BY t.created_at DESC
-  `).all<{
-    id: string;
-    name: string;
-    plan_id: string;
-    status: string;
-    contact_email: string;
-    created_at: number;
-    plan_name: string;
-    price_vnd: number;
-    max_bots: number;
-    max_documents: number;
-    monthly_ai_messages: number;
-    bot_count: number;
-    doc_count: number;
-    ai_messages_count: number;
-  }>();
+  try {
+    const rows = await c.env.DB.prepare(`
+      SELECT t.id, t.name, t.plan_id, t.status,
+             COALESCE(NULLIF(t.contact_email, ''), (SELECT email FROM users u WHERE u.tenant_id = t.id LIMIT 1), 'Chưa cập nhật') as contact_email,
+             t.created_at,
+             COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
+             COALESCE(p.price_vnd, 0) as price_vnd,
+             COALESCE(p.max_bots, 1) as max_bots,
+             COALESCE(p.max_documents, 5) as max_documents,
+             COALESCE(p.monthly_ai_messages, 1000) as monthly_ai_messages,
+             (SELECT COUNT(*) FROM bots b WHERE b.tenant_id = t.id AND b.status != 'deleted') as bot_count,
+             (SELECT COUNT(*) FROM documents d WHERE d.tenant_id = t.id) as doc_count,
+             (SELECT COALESCE(SUM(u.ai_messages), 0) FROM usage_daily u WHERE u.tenant_id = t.id) as ai_messages_count
+      FROM tenants t
+      LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
+      ORDER BY t.created_at DESC
+    `).all<{
+      id: string;
+      name: string;
+      plan_id: string;
+      status: string;
+      contact_email: string;
+      created_at: number;
+      plan_name: string;
+      price_vnd: number;
+      max_bots: number;
+      max_documents: number;
+      monthly_ai_messages: number;
+      bot_count: number;
+      doc_count: number;
+      ai_messages_count: number;
+    }>();
 
-  return c.json({
-    ok: true,
-    tenants: rows?.results || [],
-  });
+    return c.json({
+      ok: true,
+      tenants: rows?.results || [],
+    });
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : 'Unknown error';
+    return c.json({ ok: false, error: msg, tenants: [] }, 500);
+  }
 });
 
 // 3. Update Tenant Status or Plan

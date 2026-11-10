@@ -113,6 +113,16 @@ function initDatabase() {
         console.log('[Zalo-BaaS] Added raw_content column to documents table');
       }
 
+      // Upsert latest commercial plans (Trial 7 days, Starter 99k, Pro 299k, Enterprise 499k)
+      db.exec(`
+        INSERT OR REPLACE INTO plans (id, name, price_vnd, max_bots, monthly_ai_messages, max_documents, max_doc_mb, features)
+        VALUES
+          ('trial', 'Dùng thử 7 ngày', 0, 1, 1000, 3, 5, '{"rag": true, "markdown": true, "typing_action": true, "handover": true, "trial_days": 7}'),
+          ('starter', 'Starter', 99000, 1, 3000, 10, 15, '{"rag": true, "markdown": true, "typing_action": true, "handover": true, "drive_rag": false, "strict_grounding": false, "custom_tools": false}'),
+          ('pro', 'Pro', 299000, 3, 15000, 30, 50, '{"rag": true, "markdown": true, "typing_action": true, "handover": true, "drive_rag": true, "strict_grounding": false, "custom_tools": true, "crm": true}'),
+          ('enterprise', 'Enterprise', 499000, 5, 50000, 100, 200, '{"rag": true, "markdown": true, "typing_action": true, "handover": true, "drive_rag": true, "strict_grounding": true, "custom_tools": true, "dedicated_support": true, "crm": true}');
+      `);
+
       // Ensure System Tenant exists for Platform Owner
       db.exec(`
         INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
@@ -139,6 +149,53 @@ function initDatabase() {
         db.prepare("UPDATE users SET role = 'platform_owner' WHERE id = ?").run(existingAdmin.id);
         console.log(`[Zalo-BaaS] Upgraded ${adminEmail} to platform_owner`);
       }
+
+      // Ensure registered enterprise user fivestarkimky@gmail.com is present with an active tenant
+      try {
+        const fivestarUser = db.prepare("SELECT id, tenant_id FROM users WHERE email = 'fivestarkimky@gmail.com'").get();
+        if (fivestarUser) {
+          const tenantExists = db.prepare("SELECT id FROM tenants WHERE id = ?").get(fivestarUser.tenant_id);
+          if (!tenantExists) {
+            const tId = fivestarUser.tenant_id || `tenant_fivestar_${now}`;
+            db.prepare(`
+              INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
+              VALUES (?, 'Gà rán Five Star Kim Kỳ', 'starter', 'active', 'fivestarkimky@gmail.com', ?)
+            `).run(tId, now);
+            if (!fivestarUser.tenant_id) {
+              db.prepare('UPDATE users SET tenant_id = ? WHERE id = ?').run(tId, fivestarUser.id);
+            }
+          }
+        } else {
+          // If not registered yet, seed as active tenant so platform owner can manage right away
+          const existingTenant = db.prepare("SELECT id FROM tenants WHERE contact_email = 'fivestarkimky@gmail.com'").get();
+          if (!existingTenant) {
+            const tId = 'tenant_fivestar_kimky';
+            db.prepare(`
+              INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
+              VALUES (?, 'Gà rán Five Star Kim Kỳ', 'starter', 'active', 'fivestarkimky@gmail.com', ?)
+            `).run(tId, now);
+            console.log('[Zalo-BaaS] Initialized registered tenant fivestarkimky@gmail.com');
+          }
+        }
+      } catch (seedErr) {
+        console.warn('[Zalo-BaaS] Tenant seeding check notice:', seedErr.message);
+      }
+
+      // Auto-heal any orphan users without tenants
+      try {
+        const orphanUsers = db.prepare(`SELECT id, email, tenant_id, created_at FROM users WHERE tenant_id NOT IN (SELECT id FROM tenants)`).all();
+        for (const u of orphanUsers) {
+          const tId = u.tenant_id || `tenant_${Date.now()}`;
+          const brandName = u.email ? u.email.split('@')[0] : 'Doanh nghiệp mới';
+          db.prepare(`
+            INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
+            VALUES (?, ?, 'starter', 'active', ?, ?)
+          `).run(tId, brandName, u.email, u.created_at || Date.now());
+          if (!u.tenant_id) {
+            db.prepare('UPDATE users SET tenant_id = ? WHERE id = ?').run(tId, u.id);
+          }
+        }
+      } catch {}
 
       // Also ensure existing admin accounts (like testbot@gmail.com) have platform_owner role
       try {

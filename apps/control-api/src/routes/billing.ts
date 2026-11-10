@@ -54,10 +54,10 @@ billingRouter.get('/subscription', async (c) => {
     tenant = await c.env.DB.prepare(`
       SELECT t.id, t.name, t.plan_id, t.status,
              COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
-             COALESCE(p.price_vnd, 199000) as price_vnd,
+             COALESCE(p.price_vnd, 99000) as price_vnd,
              COALESCE(p.max_bots, 1) as max_bots,
-             COALESCE(p.monthly_ai_messages, 1000) as monthly_ai_messages,
-             COALESCE(p.max_documents, 5) as max_documents
+             COALESCE(p.monthly_ai_messages, 3000) as monthly_ai_messages,
+             COALESCE(p.max_documents, 10) as max_documents
       FROM tenants t
       LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
       WHERE t.id = ?
@@ -83,10 +83,10 @@ billingRouter.get('/subscription', async (c) => {
     plan_id: 'starter',
     status: 'active',
     plan_name: 'Starter',
-    price_vnd: 199000,
+    price_vnd: 99000,
     max_bots: 1,
-    monthly_ai_messages: 1000,
-    max_documents: 5,
+    monthly_ai_messages: 3000,
+    max_documents: 10,
   };
 
   // Count current bots
@@ -175,6 +175,19 @@ billingRouter.post(
 
     if (!plan) {
       return c.json({ error: 'Gói cước không hợp lệ' }, 404);
+    }
+
+    // If free / trial plan (price is 0), activate immediately without payment
+    if (plan.price_vnd === 0) {
+      await c.env.DB.prepare('UPDATE tenants SET plan_id = ? WHERE id = ?')
+        .bind(plan.id, tenantId)
+        .run();
+      return c.json({
+        ok: true,
+        trial_activated: true,
+        message: 'Kích hoạt gói Dùng thử 7 ngày thành công!',
+        plan_id: plan.id,
+      });
     }
 
     const invoiceId = `inv_${nanoid(16)}`;

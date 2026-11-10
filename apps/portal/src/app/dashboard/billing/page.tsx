@@ -53,30 +53,40 @@ interface PaymentInvoice {
 
 const DEFAULT_PLANS: Plan[] = [
   {
-    id: 'starter',
-    name: 'Starter',
-    price_vnd: 199000,
+    id: 'trial',
+    name: 'Dùng thử 7 ngày',
+    price_vnd: 0,
     max_bots: 1,
     monthly_ai_messages: 1000,
-    max_documents: 5,
-    max_doc_mb: 10,
+    max_documents: 3,
+    max_doc_mb: 5,
+    features: { rag: true, markdown: true, handover: true },
+  },
+  {
+    id: 'starter',
+    name: 'Starter',
+    price_vnd: 99000,
+    max_bots: 1,
+    monthly_ai_messages: 3000,
+    max_documents: 10,
+    max_doc_mb: 15,
     features: { rag: true, markdown: true, handover: true },
   },
   {
     id: 'pro',
     name: 'Pro',
-    price_vnd: 599000,
+    price_vnd: 299000,
     max_bots: 3,
-    monthly_ai_messages: 10000,
-    max_documents: 20,
+    monthly_ai_messages: 15000,
+    max_documents: 30,
     max_doc_mb: 50,
     features: { rag: true, markdown: true, handover: true, crm: true },
   },
   {
     id: 'enterprise',
     name: 'Enterprise',
-    price_vnd: 1990000,
-    max_bots: 10,
+    price_vnd: 499000,
+    max_bots: 5,
     monthly_ai_messages: 50000,
     max_documents: 100,
     max_doc_mb: 200,
@@ -144,7 +154,7 @@ export default function BillingPage() {
     setPaymentSuccess(false);
 
     try {
-      const res = await fetchApi<{ ok: boolean; invoice: PaymentInvoice }>(
+      const res = await fetchApi<{ ok: boolean; trial_activated?: boolean; invoice?: PaymentInvoice }>(
         '/v1/billing/create-payment',
         {
           method: 'POST',
@@ -154,7 +164,17 @@ export default function BillingPage() {
           }),
         }
       );
-      setInvoice(res.invoice);
+
+      if (res.trial_activated) {
+        setPaymentSuccess(true);
+        await loadBillingData();
+        setTimeout(() => {
+          setSelectedPlan(null);
+          setPaymentSuccess(false);
+        }, 2000);
+      } else if (res.invoice) {
+        setInvoice(res.invoice);
+      }
     } catch (err: unknown) {
       setPaymentError(err instanceof Error ? err.message : 'Không thể tạo đơn thanh toán');
     } finally {
@@ -323,90 +343,124 @@ export default function BillingPage() {
           </p>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
           {plans.map((plan) => {
             const isCurrent = effectiveSub.plan_id.toLowerCase() === plan.id.toLowerCase();
             const isPro = plan.id === 'pro';
+            const isTrial = plan.id === 'trial';
+            const isEnterprise = plan.id === 'enterprise';
 
             return (
               <div
                 key={plan.id}
-                className={`relative rounded-3xl p-6 transition-all duration-200 ${
+                className={`relative rounded-3xl p-6 transition-all duration-200 flex flex-col justify-between ${
                   isPro
                     ? 'border-2 border-blue-600 bg-white shadow-xl shadow-blue-500/10'
+                    : isCurrent
+                    ? 'border-2 border-emerald-500 bg-white shadow-sm'
                     : 'border border-slate-200 bg-white shadow-sm hover:border-slate-300'
                 }`}
               >
                 {isPro && (
-                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 rounded-full bg-blue-600 px-3.5 py-1 text-[11px] font-bold text-white shadow-sm flex items-center gap-1">
+                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 rounded-full bg-blue-600 px-3.5 py-1 text-[11px] font-bold text-white shadow-sm flex items-center gap-1 whitespace-nowrap">
                     <Sparkles className="h-3 w-3" /> Được ưa chuộng nhất
                   </div>
                 )}
-
-                <div className="mb-4">
-                  <h3 className="text-lg font-bold text-slate-900">{plan.name}</h3>
-                  <div className="mt-3 flex items-baseline gap-1">
-                    <span className="text-3xl font-extrabold text-slate-900">
-                      {plan.price_vnd.toLocaleString('vi-VN')}
-                    </span>
-                    <span className="text-xs font-semibold text-slate-500">đ / tháng</span>
+                {isTrial && (
+                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 rounded-full bg-amber-500 px-3.5 py-1 text-[11px] font-bold text-white shadow-sm flex items-center gap-1 whitespace-nowrap">
+                    <Clock className="h-3 w-3" /> Trải nghiệm 7 ngày
                   </div>
-                </div>
+                )}
+                {isEnterprise && (
+                  <div className="absolute -top-3.5 left-1/2 -translate-x-1/2 rounded-full bg-purple-600 px-3.5 py-1 text-[11px] font-bold text-white shadow-sm flex items-center gap-1 whitespace-nowrap">
+                    <ShieldCheck className="h-3 w-3" /> Doanh nghiệp lớn
+                  </div>
+                )}
 
-                <ul className="space-y-3 border-t border-slate-100 py-5 text-xs text-slate-600">
-                  <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span>
-                      Tối đa <strong>{plan.max_bots}</strong> Zalo Bot kết nối
-                    </span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span>
-                      Tối đa <strong>{plan.max_documents}</strong> tài liệu RAG
-                    </span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span>
-                      <strong>{plan.monthly_ai_messages.toLocaleString()}</strong> tin nhắn AI / tháng
-                    </span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span>Hộp thư Chat Live & Chuyển giao CSKH</span>
-                  </li>
-                  <li className="flex items-center gap-2">
-                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                    <span>Quản lý Khách hàng CRM & Xuất Excel</span>
-                  </li>
-                  {plan.id === 'enterprise' && (
+                <div>
+                  <div className="mb-4 mt-1">
+                    <h3 className="text-lg font-bold text-slate-900">{plan.name}</h3>
+                    <div className="mt-3 flex items-baseline gap-1">
+                      {plan.price_vnd === 0 ? (
+                        <span className="text-3xl font-extrabold text-emerald-600">
+                          Miễn phí
+                        </span>
+                      ) : (
+                        <>
+                          <span className="text-3xl font-extrabold text-slate-900">
+                            {plan.price_vnd.toLocaleString('vi-VN')}
+                          </span>
+                          <span className="text-xs font-semibold text-slate-500">đ / tháng</span>
+                        </>
+                      )}
+                    </div>
+                  </div>
+
+                  <ul className="space-y-3 border-t border-slate-100 py-5 text-xs text-slate-600">
                     <li className="flex items-center gap-2">
                       <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                      <span>Hỗ trợ kỹ thuật 24/7 & Tùy biến tính năng</span>
+                      <span>
+                        Tối đa <strong>{plan.max_bots}</strong> Zalo Bot kết nối
+                      </span>
                     </li>
-                  )}
-                </ul>
+                    <li className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                      <span>
+                        Tối đa <strong>{plan.max_documents}</strong> tài liệu RAG
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                      <span>
+                        <strong>{plan.monthly_ai_messages.toLocaleString()}</strong> tin nhắn AI / tháng
+                      </span>
+                    </li>
+                    <li className="flex items-center gap-2">
+                      <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                      <span>Hộp thư Chat Live & Chuyển giao CSKH</span>
+                    </li>
+                    {(isPro || isEnterprise) && (
+                      <li className="flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                        <span>Quản lý Khách hàng CRM & Xuất Excel</span>
+                      </li>
+                    )}
+                    {isEnterprise && (
+                      <li className="flex items-center gap-2">
+                        <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                        <span>Hỗ trợ kỹ thuật 24/7 & Tùy biến tính năng</span>
+                      </li>
+                    )}
+                  </ul>
+                </div>
 
-                <button
-                  onClick={() => handleStartPayment(plan)}
-                  disabled={isCurrent}
-                  className={`w-full rounded-2xl py-3 text-xs font-bold transition flex items-center justify-center gap-2 ${
-                    isCurrent
-                      ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
-                      : isPro
-                      ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-500/20'
-                      : 'border border-blue-600 text-blue-600 hover:bg-blue-50'
-                  }`}
-                >
-                  {isCurrent ? (
-                    'Gói đang sử dụng'
-                  ) : (
-                    <>
-                      <Zap className="h-4 w-4" /> Nâng cấp ngay
-                    </>
-                  )}
-                </button>
+                <div className="pt-2">
+                  <button
+                    onClick={() => handleStartPayment(plan)}
+                    disabled={isCurrent || creatingPayment}
+                    className={`w-full rounded-2xl py-3 text-xs font-bold transition flex items-center justify-center gap-2 ${
+                      isCurrent
+                        ? 'bg-slate-100 text-slate-400 cursor-not-allowed'
+                        : isPro
+                        ? 'bg-blue-600 text-white hover:bg-blue-700 shadow-md shadow-blue-500/20'
+                        : isTrial
+                        ? 'bg-amber-500 text-white hover:bg-amber-600 shadow-md shadow-amber-500/20'
+                        : 'border border-blue-600 text-blue-600 hover:bg-blue-50'
+                    }`}
+                  >
+                    {isCurrent ? (
+                      'Gói đang sử dụng'
+                    ) : isTrial ? (
+                      <>
+                        <Sparkles className="h-4 w-4" /> Kích hoạt Dùng thử (0 đ)
+                      </>
+                    ) : (
+                      <>
+                        <Zap className="h-4 w-4" /> Nâng cấp ngay
+                      </>
+                    )}
+                  </button>
+                </div>
               </div>
             );
           })}

@@ -31,9 +31,9 @@ export function buildSystemInstruction(options: BuildSystemInstructionOptions): 
   // Smart Product / Menu Inquiry Rules
   parts.push(
     `5. NGUYÊN TẮC BÁO GIÁ VÀ TƯ VẤN SẢN PHẨM (RẤT QUAN TRỌNG):`,
-    `- KHI KHÁCH HỎI GIÁ HOẶC HỎI VỀ 1 MÓN CỤ THỂ (Ví dụ: "Xúc xích bao nhiêu cây?", "Gà giòn giá sao?", "Có mì Ý không?"):`,
-    `  + CHỈ CUNG CẤP CÁC SẢN PHẨM GIỐNG HOẶC TƯƠNG TỰ với món khách yêu cầu (kèm giá tiền cụ thể và đơn vị tính xiên/que/phần/cây).`,
-    `  + TUYỆT ĐỐI KHÔNG liệt kê toàn bộ menu hay tuôn ra các món không liên quan khác (ví dụ: khách hỏi xúc xích thì chỉ trả lời các loại xúc xích, KHÔNG liệt kê cá viên, bò viên, chả cá...).`,
+    `- KHI KHÁCH HỎI GIÁ HOẶC HỎI VỀ 1 MÓN CỤ THỂ (Ví dụ: "Xúc xích bao nhiêu cây?", "Gà giòn giá sao?", "giá gà của cửa hàng?", "Có mì Ý không?"):`,
+    `  + TÌM KIẾM GẦN ĐÚNG VÀ TẤT CẢ CÁC MÓN CHỨA TỪ KHÓA: Tìm kiếm thông minh và linh hoạt tất cả các sản phẩm có chứa từ khóa hoặc tương tự với món khách hỏi (Ví dụ: khách hỏi "giá gà", "giá gà của cửa hàng", "giá gà giòn?" -> hãy tìm và trả lời tất cả các món gà có trong tài liệu như "Gà giòn truyền thống", "Gà giòn cay", "Gà giòn giòn", "Cánh gà chiên nước mắm", "Đùi gà chiên xù", "Gà xiên que"... kèm giá bán và đơn vị tính).`,
+    `  + TUYỆT ĐỐI KHÔNG liệt kê toàn bộ menu hay tuôn ra các nhóm món không liên quan khác (ví dụ: khách hỏi gà thì chỉ trả lời các món gà, KHÔNG liệt kê cá viên, bò viên, chả cá...).`,
     `  + GỢI Ý MÓN KÈM (UPSELL TINH TẾ): Sau khi đã trả lời đúng trọng tâm món khách hỏi, hãy gợi ý thêm 1-2 món ăn kèm hoặc nước ngọt phù hợp (ví dụ: gợi ý xốt chấm 5.000đ như xốt phô mai / xốt mắm tỏi, hoặc nước ngọt giải khát 10.000đ để dùng kèm).`,
     `- KHI KHÁCH HÀNG YÊU CẦU XEM TOÀN BỘ MENU (Ví dụ: "menu quán", "gửi menu cửa hàng", "quán có những món gì", "cho xem thực đơn"):`,
     `  + MỚI CUNG CẤP ĐẦY ĐỦ THỰC ĐƠN theo từng nhóm món gọn gàng (Gà rán, Xiên que & Ăn vặt, Mì Ý, Nước & Xốt) kèm giá bán niêm yết.`,

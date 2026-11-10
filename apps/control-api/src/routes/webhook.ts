@@ -9,6 +9,180 @@ import type { Env, HonoVariables } from '../types.js';
 
 export const webhookRouter = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
 
+// Helper to normalize Vietnamese text (strip accents and special characters)
+export function normalizeVietnamese(text: string): string {
+  return text
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[đĐ]/g, 'd')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export interface MenuItem {
+  name: string;
+  price: string;
+  unit: string;
+  note: string;
+  raw?: string;
+}
+
+// Parses menu items from markdown tables, bullet lists, or price lines
+export function parseMenuItems(content: string): MenuItem[] {
+  const items: MenuItem[] = [];
+  const lines = content.split('\n');
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+
+    // 1. Markdown table row: | Tên món | Giá | Đơn vị | Ghi chú |
+    if (trimmed.startsWith('|') && !trimmed.includes('|:--') && !trimmed.includes('| Tên món |') && !trimmed.includes('|---')) {
+      const parts = trimmed.split('|').map((p) => p.trim()).filter(Boolean);
+      if (parts.length >= 2) {
+        const name = parts[0];
+        const price = parts[1];
+        const unit = parts[2] || 'phần';
+        const note = parts[3] || '';
+        if (/\d+/.test(price)) {
+          items.push({ name, price, unit, note, raw: trimmed });
+          continue;
+        }
+      }
+    }
+
+    // 2. Bullet / List format: - Gà giòn truyền thống: 32.000đ / Miếng (Ghi chú)
+    const listMatch = trimmed.match(
+      /^[-*•\d.]+\s*(.+?)\s*[:–-]\s*([\d.,]+\s*(?:đ|vnd|vnđ|k|nghìn|đồng)?)\s*(?:\/\s*([^\s()]+))?\s*(?:\((.*?)\))?$/i
+    );
+    if (listMatch) {
+      items.push({
+        name: listMatch[1].trim(),
+        price: listMatch[2].trim(),
+        unit: listMatch[3] ? listMatch[3].trim() : 'phần',
+        note: listMatch[4] ? listMatch[4].trim() : '',
+        raw: trimmed,
+      });
+      continue;
+    }
+
+    // 3. General line containing price: e.g. Gà giòn 32.000đ / miếng
+    const priceMatch = trimmed.match(
+      /([^\d:–-]+?)\s*[:–-]?\s*(\d{1,3}(?:[.,]\d{3})*\s*(?:đ|vnd|vnđ|k|đồng))\s*(?:\/\s*([^\s()]+))?\s*(?:\((.*?)\))?/i
+    );
+    if (
+      priceMatch &&
+      priceMatch[1].trim().length >= 2 &&
+      !priceMatch[1].toLowerCase().includes('giờ mở') &&
+      !priceMatch[1].toLowerCase().includes('hotline')
+    ) {
+      items.push({
+        name: priceMatch[1].replace(/^[-*•\d.]+\s*/, '').trim(),
+        price: priceMatch[2].trim(),
+        unit: priceMatch[3] ? priceMatch[3].trim() : 'phần',
+        note: priceMatch[4] ? priceMatch[4].trim() : '',
+        raw: trimmed,
+      });
+    }
+  }
+
+  return items;
+}
+
+// Extracts key search terms by removing punctuation and stop words
+export function extractSearchTerms(query: string) {
+  const clean = query
+    .toLowerCase()
+    .replace(/[?!.,;:()"'`]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const stopWords = new Set([
+    'giá', 'gia', 'bao', 'nhiêu', 'nhieu', 'tiền', 'tien', 'của', 'cua', 'cửa', 'hàng', 'hang',
+    'quán', 'quan', 'cho', 'hỏi', 'hoi', 'có', 'co', 'bán', 'ban', 'không', 'khong', 'mình', 'minh',
+    'em', 'ơi', 'oi', 'ạ', 'a', 'nhỉ', 'nhi', 'shop', 'với', 'voi', 'ở', 'o', 'đâu', 'dau',
+    'là', 'la', 'mấy', 'may', 'thế', 'the', 'nào', 'nao', 'như', 'nhu', 'được', 'duoc',
+    'cây', 'que', 'xiên', 'xien', 'phần', 'phan', 'miếng', 'mieng', 'cái', 'cai', 'hộp', 'hop', 'ly', 'cốc', 'coc',
+    'bên', 'ben', 'thì', 'thi', 'loại', 'loai', 'các', 'cac', 'những', 'nhung', 'một', 'mot', 'từng', 'tung'
+  ]);
+
+  const words = clean.split(' ').filter((w) => w.length > 0 && !stopWords.has(w));
+  return {
+    rawClean: clean,
+    words,
+    phrase: words.join(' '),
+    normWords: words.map((w) => normalizeVietnamese(w)),
+    normPhrase: normalizeVietnamese(words.join(' ')),
+  };
+}
+
+// Searches menu items using exact phrase, normalized phrase, and word matching
+export function searchMenuItems(query: string, items: MenuItem[]): MenuItem[] {
+  const kw = extractSearchTerms(query);
+  if (!kw.phrase && kw.words.length === 0) {
+    return items;
+  }
+
+  const results: Array<{ item: MenuItem; score: number }> = [];
+
+  for (const item of items) {
+    const rawName = item.name.toLowerCase();
+    const rawNote = (item.note || '').toLowerCase();
+    const normName = normalizeVietnamese(item.name);
+    const normNote = normalizeVietnamese(item.note || '');
+
+    let score = 0;
+
+    // 1. Exact phrase match (with or without tone)
+    if (kw.phrase && (rawName.includes(kw.phrase) || rawNote.includes(kw.phrase))) {
+      score += 100;
+    }
+    if (kw.normPhrase && (normName.includes(kw.normPhrase) || normNote.includes(kw.normPhrase))) {
+      score += 80;
+    }
+
+    // 2. Word matches
+    let matchedWordsCount = 0;
+    for (let i = 0; i < kw.words.length; i++) {
+      const w = kw.words[i];
+      const nw = kw.normWords[i];
+
+      const regexRaw = new RegExp('(?:^|\\s)' + w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '(?:$|\\s)', 'i');
+      const regexNorm = new RegExp('(?:^|\\s)' + nw + '(?:$|\\s)', 'i');
+
+      if (regexRaw.test(rawName)) {
+        score += 30;
+        matchedWordsCount++;
+      } else if (rawName.includes(w)) {
+        score += 20;
+        matchedWordsCount++;
+      } else if (regexNorm.test(normName)) {
+        score += 25;
+        matchedWordsCount++;
+      } else if (normName.includes(nw)) {
+        score += 15;
+        matchedWordsCount++;
+      }
+    }
+
+    if (matchedWordsCount > 0 || score >= 50) {
+      results.push({ item, score: score + matchedWordsCount * 10 });
+    }
+  }
+
+  results.sort((a, b) => b.score - a.score);
+
+  if (results.length > 0) {
+    const topScore = results[0].score;
+    const threshold = topScore >= 60 ? topScore * 0.4 : 10;
+    return results.filter((r) => r.score >= threshold).map((r) => r.item);
+  }
+
+  return [];
+}
+
 // Helper to extract clean customer-facing information or answer specific queries
 export function formatSmartKnowledgeReply(
   query: string,
@@ -110,64 +284,44 @@ export function formatSmartKnowledgeReply(
   // 5. Check if user is asking for the entire menu
   const isFullMenu = /\b(menu|thực đơn|toàn bộ|tất cả|danh sách món|các món|quán có gì|có những gì|bảng giá tổng|full)\b/i.test(queryLower);
 
-  // 6. Identify specific food search keywords
-  const FOOD_TERMS = [
-    'xúc xích', 'hotdog', 'torpedo', 'sumo',
-    'gà giòn', 'gà rán', 'cánh gà', 'đùi gà', 'gà xiên', 'tatsutaage', 'gà cay',
-    'cá viên', 'bò viên', 'tàu hủ', 'sủi cảo', 'phô mai que', 'chả cá', 'xíu mại',
-    'khoai tây', 'chả giò', 'gai jor',
-    'mì', 'spaghetti',
-    'xốt', 'sốt', 'mắm tỏi', 'phô mai',
-    'nước', 'pepsi', 'coca', 'sting', '7up', 'trà', 'giải khát'
-  ];
+  // 6. Intelligent fuzzy & keyword product search
+  const allItems = parseMenuItems(rawContent);
 
-  const matchedKeywords = FOOD_TERMS.filter((term) => queryLower.includes(term));
+  if (!isFullMenu) {
+    const matchedItems = searchMenuItems(query, allItems);
 
-  // If specific food item requested, filter markdown table rows or lines
-  if (!isFullMenu && (matchedKeywords.length > 0 || queryLower.includes('giá') || queryLower.includes('bao nhiêu'))) {
-    const lines = rawContent.split('\n');
-    const filteredRows: Array<{ name: string; price: string; unit: string; note: string }> = [];
+    if (matchedItems.length > 0) {
+      const searchTerms = extractSearchTerms(query);
+      const titleKeyword = searchTerms.phrase ? searchTerms.phrase.toUpperCase() : 'MÓN BẠN ĐANG HỎI';
 
-    const effectiveKeywords = matchedKeywords.length > 0
-      ? matchedKeywords
-      : queryLower.split(/\s+/).filter(w => w.length > 1 && !['giá', 'bao', 'nhiêu', 'tiền', 'cây', 'quán', 'bán', 'cho', 'hỏi', 'em', 'ơi', 'ạ', 'mình', 'có'].includes(w));
+      const itemsList = matchedItems
+        .map((r) => {
+          let emoji = '🍴';
+          const nLow = r.name.toLowerCase();
+          if (nLow.includes('gà')) emoji = '🍗';
+          else if (nLow.includes('xúc xích') || nLow.includes('hotdog')) emoji = '🌭';
+          else if (nLow.includes('khoai')) emoji = '🍟';
+          else if (nLow.includes('mì') || nLow.includes('spaghetti')) emoji = '🍝';
+          else if (nLow.includes('nước') || nLow.includes('trà') || nLow.includes('pepsi') || nLow.includes('coca')) emoji = '🥤';
+          else if (nLow.includes('viên') || nLow.includes('que') || nLow.includes('xiên')) emoji = '🍢';
 
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith('|') || trimmed.includes('|:--') || trimmed.includes('| Tên món |')) {
-        continue;
-      }
-      const parts = trimmed.split('|').map((p) => p.trim()).filter(Boolean);
-      if (parts.length >= 2) {
-        const dishName = parts[0];
-        const price = parts[1];
-        const unit = parts[2] || 'phần';
-        const note = parts[3] || '';
+          return `• ${emoji} **${r.name}**: ${r.price} / ${r.unit}${r.note ? ` _(${r.note})_` : ''}`;
+        })
+        .join('\n');
 
-        const lineLower = (dishName + ' ' + note).toLowerCase();
-        const matches = effectiveKeywords.some((kw) => lineLower.includes(kw));
-        if (matches) {
-          filteredRows.push({ name: dishName, price, unit, note });
-        }
-      }
+      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn thông tin giá các món **${titleKeyword}** tại quán ạ:\n\n${itemsList}\n\n✨ **Gợi ý thêm cho bạn:** Quán có các loại Xốt chấm cực ngon (Xốt phô mai / xốt mắm tỏi: 5.000đ) và Nước ngọt giải khát (10.000đ) dùng kèm để bữa ăn thêm trọn vị nhé! 😋`;
     }
 
-    if (filteredRows.length > 0) {
-      const keywordTitle = matchedKeywords[0] ? matchedKeywords[0].toUpperCase() : 'MÓN BẠN ĐANG HỎI';
-      const itemsList = filteredRows.map((r) => {
-        let emoji = '🍴';
-        const nLow = r.name.toLowerCase();
-        if (nLow.includes('gà')) emoji = '🍗';
-        else if (nLow.includes('xúc xích') || nLow.includes('hotdog')) emoji = '🌭';
-        else if (nLow.includes('khoai')) emoji = '🍟';
-        else if (nLow.includes('mì') || nLow.includes('spaghetti')) emoji = '🍝';
-        else if (nLow.includes('nước') || nLow.includes('trà') || nLow.includes('pepsi')) emoji = '🥤';
-        else if (nLow.includes('viên') || nLow.includes('que') || nLow.includes('xiên')) emoji = '🍢';
-
-        return `• ${emoji} **${r.name}**: ${r.price} / ${r.unit}${r.note ? ` _(${r.note})_` : ''}`;
-      }).join('\n');
-
-      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn bảng giá các loại **${keywordTitle}** tại quán ạ:\n\n${itemsList}\n\n✨ **Gợi ý thêm cho bạn:** Quán có các loại Xốt chấm cực ngon (Xốt phô mai / xốt mắm tỏi: 5.000đ) và Nước ngọt giải khát (10.000đ) dùng kèm để bữa ăn thêm trọn vị nhé! 😋`;
+    // If query asks for price or a specific dish but nothing matched in menu
+    if (
+      queryLower.includes('giá') ||
+      queryLower.includes('bao nhiêu') ||
+      queryLower.includes('tiền') ||
+      queryLower.includes('món')
+    ) {
+      const searchTerms = extractSearchTerms(query);
+      const missingTerm = searchTerms.phrase || query.replace(/[?!.,]/g, '').trim();
+      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ hiện tại em chưa tìm thấy món "${missingTerm}" trong bảng giá của quán ạ.\n\n👉 Bạn có thể nhắn **"menu"** để xem thực đơn đầy đủ các món đang phục vụ, hoặc liên hệ Hotline/Zalo Quản lý: **0986.000.797** để được nhân viên hỗ trợ nhanh nhất nhé! 🍗✨`;
     }
   }
 
@@ -539,8 +693,17 @@ webhookRouter.post('/bot/:botId', async (c) => {
         }
       }
 
-      if (bestChunk) {
-        botReply = formatSmartKnowledgeReply(safeText, bestChunk.content, bot.name, displayName);
+      const combinedKnowledge = (candidateList.length > 0 ? candidateList : dbChunks)
+        .map((c) => c.content)
+        .join('\n\n');
+
+      if (combinedKnowledge || bestChunk) {
+        botReply = formatSmartKnowledgeReply(
+          safeText,
+          combinedKnowledge || bestChunk.content,
+          bot.name,
+          displayName
+        );
       } else {
         botReply = `Xin chào ${displayName}! Em đã nhận được tin nhắn của bạn. Em sẽ phản hồi bạn ngay ạ.`;
       }
@@ -548,36 +711,8 @@ webhookRouter.post('/bot/:botId', async (c) => {
   } else {
     // If Gemini API Key is not set yet in Portal or Environment
     if (dbChunks.length > 0) {
-      const queryLower = safeText.toLowerCase();
-      const tokens = queryLower.split(/\s+/).filter((w) => w.length > 1);
-      let bestChunk = dbChunks[0];
-      let maxScore = -1;
-
-      for (const chk of dbChunks) {
-        let score = 0;
-        const textLower = (chk.title + ' ' + chk.content).toLowerCase();
-        for (const t of tokens) {
-          if (textLower.includes(t)) score += 2;
-        }
-        if ((queryLower.includes('giá') || queryLower.includes('bao nhiêu') || queryLower.includes('tiền')) &&
-            (textLower.includes('bảng giá') || textLower.includes('đơn vị: vnđ') || textLower.includes('đ') || textLower.includes('000đ') || textLower.includes('giá:'))) {
-          score += 10;
-        }
-        if ((queryLower.includes('thực đơn') || queryLower.includes('menu') || queryLower.includes('món')) &&
-            (textLower.includes('thực đơn') || textLower.includes('menu') || textLower.includes('gà giòn') || textLower.includes('cánh gà'))) {
-          score += 10;
-        }
-        if (score > maxScore) {
-          maxScore = score;
-          bestChunk = chk;
-        }
-      }
-
-      if (maxScore > 0 || dbChunks.length === 1) {
-        botReply = formatSmartKnowledgeReply(safeText, bestChunk.content, bot.name, displayName);
-      } else {
-        botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được câu hỏi "${safeText}". Hiện tại quán có đầy đủ thực đơn và bảng giá, bạn vui lòng hỏi cụ thể món hoặc giá để em hỗ trợ nhanh nhất nhé!`;
-      }
+      const combinedKnowledge = dbChunks.map((c) => c.content).join('\n\n');
+      botReply = formatSmartKnowledgeReply(safeText, combinedKnowledge, bot.name, displayName);
     } else {
       botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được tin nhắn: "${safeText}". Hệ thống kết nối Zalo Bot đang hoạt động rất tốt!`;
     }

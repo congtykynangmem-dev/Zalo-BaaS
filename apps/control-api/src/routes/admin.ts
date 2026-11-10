@@ -12,11 +12,11 @@ adminRouter.use('*', authMiddleware, requireRole(['platform_owner']));
 // 1. System Overview Metrics
 adminRouter.get('/overview', async (c) => {
   try {
-    const tenantsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM tenants').first<{ count: number }>().catch(() => ({ count: 0 }));
-    const usersCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM users').first<{ count: number }>().catch(() => ({ count: 0 }));
-    const botsCount = await c.env.DB.prepare("SELECT COUNT(*) as count FROM bots WHERE status = 'active'").first<{ count: number }>().catch(() => ({ count: 0 }));
-    const docsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM documents').first<{ count: number }>().catch(() => ({ count: 0 }));
-    const totalAi = await c.env.DB.prepare('SELECT SUM(ai_messages) as total FROM usage_daily').first<{ total: number | null }>().catch(() => ({ total: 0 }));
+    const tenantsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM tenants').bind().first<{ count: number }>().catch(() => ({ count: 0 }));
+    const usersCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM users').bind().first<{ count: number }>().catch(() => ({ count: 0 }));
+    const botsCount = await c.env.DB.prepare("SELECT COUNT(*) as count FROM bots WHERE status = 'active'").bind().first<{ count: number }>().catch(() => ({ count: 0 }));
+    const docsCount = await c.env.DB.prepare('SELECT COUNT(*) as count FROM documents').bind().first<{ count: number }>().catch(() => ({ count: 0 }));
+    const totalAi = await c.env.DB.prepare('SELECT SUM(ai_messages) as total FROM usage_daily').bind().first<{ total: number | null }>().catch(() => ({ total: 0 }));
 
     // Revenue estimation
     const revenueRow = await c.env.DB.prepare(`
@@ -24,7 +24,7 @@ adminRouter.get('/overview', async (c) => {
       FROM tenants t
       JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
       WHERE t.status = 'active' AND p.price_vnd > 0
-    `).first<{ monthly_revenue: number | null }>().catch(() => ({ monthly_revenue: 0 }));
+    `).bind().first<{ monthly_revenue: number | null }>().catch(() => ({ monthly_revenue: 0 }));
 
     return c.json({
       ok: true,
@@ -57,6 +57,25 @@ adminRouter.get('/overview', async (c) => {
 // 2. List All Tenants with Detailed Quota & Stats
 adminRouter.get('/tenants', async (c) => {
   try {
+    // Auto-heal any registered user whose tenant record might be missing
+    await c.env.DB.prepare(`
+      INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
+      SELECT u.tenant_id,
+             CASE WHEN u.email = 'fivestarkimky@gmail.com' THEN 'Gà rán Five Star Kim Kỳ' ELSE COALESCE(NULLIF(u.email, ''), 'Doanh nghiệp mới') END,
+             'starter', 'active', u.email, u.created_at
+      FROM users u
+      WHERE u.tenant_id IS NOT NULL AND u.tenant_id != ''
+        AND u.tenant_id NOT IN (SELECT id FROM tenants)
+    `).bind().run().catch(() => {});
+
+    // Ensure fivestarkimky@gmail.com brand name is properly formatted
+    await c.env.DB.prepare(`
+      UPDATE tenants
+      SET name = 'Gà rán Five Star Kim Kỳ'
+      WHERE contact_email = 'fivestarkimky@gmail.com'
+         OR id IN (SELECT tenant_id FROM users WHERE email = 'fivestarkimky@gmail.com')
+    `).bind().run().catch(() => {});
+
     const rows = await c.env.DB.prepare(`
       SELECT t.id, t.name, t.plan_id, t.status,
              COALESCE(NULLIF(t.contact_email, ''), (SELECT email FROM users u WHERE u.tenant_id = t.id LIMIT 1), 'Chưa cập nhật') as contact_email,
@@ -72,7 +91,7 @@ adminRouter.get('/tenants', async (c) => {
       FROM tenants t
       LEFT JOIN plans p ON LOWER(t.plan_id) = LOWER(p.id)
       ORDER BY t.created_at DESC
-    `).all<{
+    `).bind().all<{
       id: string;
       name: string;
       plan_id: string;

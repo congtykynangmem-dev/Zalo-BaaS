@@ -19,7 +19,7 @@ const BANK_CONFIG = {
 billingRouter.get('/plans', async (c) => {
   const plans = await c.env.DB.prepare(
     'SELECT id, name, price_vnd, max_bots, monthly_ai_messages, max_documents, max_doc_mb, features FROM plans ORDER BY price_vnd ASC'
-  ).all<{
+  ).bind().all<{
     id: string;
     name: string;
     price_vnd: number;

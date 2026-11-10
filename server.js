@@ -165,17 +165,24 @@ function initDatabase() {
               db.prepare('UPDATE users SET tenant_id = ? WHERE id = ?').run(tId, fivestarUser.id);
             }
           }
+          db.prepare("UPDATE tenants SET name = 'Gà rán Five Star Kim Kỳ' WHERE id = ?").run(fivestarUser.tenant_id);
         } else {
-          // If not registered yet, seed as active tenant so platform owner can manage right away
-          const existingTenant = db.prepare("SELECT id FROM tenants WHERE contact_email = 'fivestarkimky@gmail.com'").get();
-          if (!existingTenant) {
-            const tId = 'tenant_fivestar_kimky';
-            db.prepare(`
-              INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
-              VALUES (?, 'Gà rán Five Star Kim Kỳ', 'starter', 'active', 'fivestarkimky@gmail.com', ?)
-            `).run(tId, now);
-            console.log('[Zalo-BaaS] Initialized registered tenant fivestarkimky@gmail.com');
-          }
+          // If not registered yet, seed both tenant and user so platform owner can manage right away
+          const tId = 'tenant_fivestar_kimky';
+          db.prepare(`
+            INSERT OR IGNORE INTO tenants (id, name, plan_id, status, contact_email, created_at)
+            VALUES (?, 'Gà rán Five Star Kim Kỳ', 'starter', 'active', 'fivestarkimky@gmail.com', ?)
+          `).run(tId, now);
+          db.prepare("UPDATE tenants SET name = 'Gà rán Five Star Kim Kỳ' WHERE contact_email = 'fivestarkimky@gmail.com'").run();
+
+          const salt = crypto.randomBytes(16);
+          const derived = crypto.pbkdf2Sync('FiveStar@123', salt, 100000, 32, 'sha256');
+          const pHash = salt.toString('hex') + ':' + derived.toString('hex');
+          db.prepare(`
+            INSERT OR IGNORE INTO users (id, tenant_id, email, password_hash, role, status, created_at)
+            VALUES (?, ?, 'fivestarkimky@gmail.com', ?, 'tenant_admin', 'active', ?)
+          `).run(`usr_fivestar_${now}`, tId, pHash, now);
+          console.log('[Zalo-BaaS] Initialized registered tenant & user fivestarkimky@gmail.com');
         }
       } catch (seedErr) {
         console.warn('[Zalo-BaaS] Tenant seeding check notice:', seedErr.message);
@@ -205,28 +212,38 @@ function initDatabase() {
       console.warn('[Zalo-BaaS] Migration check notice:', migErr.message);
     }
 
-    // D1 interface wrapper
+    // D1 interface wrapper with full Cloudflare D1 compatibility
     d1Database = {
       prepare(sql) {
-        return {
-          bind(...params) {
-            return {
-              async run() {
-                const stmt = db.prepare(sql);
-                const info = stmt.run(...params);
-                return { success: true, meta: info };
-              },
-              async first() {
-                const stmt = db.prepare(sql);
-                return stmt.get(...params) || null;
-              },
-              async all() {
-                const stmt = db.prepare(sql);
-                return { results: stmt.all(...params) };
-              }
-            };
-          }
-        };
+        function createStatement(boundParams = []) {
+          return {
+            bind(...newParams) {
+              return createStatement(newParams);
+            },
+            async run(...extraParams) {
+              const params = extraParams.length > 0 ? extraParams : boundParams;
+              const stmt = db.prepare(sql);
+              const info = stmt.run(...params);
+              return { success: true, meta: info };
+            },
+            async first(col) {
+              const stmt = db.prepare(sql);
+              const row = stmt.get(...boundParams);
+              if (!row) return null;
+              if (col && typeof col === 'string') return row[col];
+              return row;
+            },
+            async all() {
+              const stmt = db.prepare(sql);
+              return { results: stmt.all(...boundParams) };
+            },
+            async raw() {
+              const stmt = db.prepare(sql);
+              return stmt.all(...boundParams);
+            }
+          };
+        }
+        return createStatement();
       }
     };
     console.log(`[Zalo-BaaS] SQLite Database initialized at ${dbPath}`);

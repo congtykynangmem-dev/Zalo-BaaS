@@ -2,6 +2,13 @@
 import { Hono } from 'hono';
 import { nanoid } from 'nanoid';
 import { authMiddleware, requireRole, hashPassword } from '../auth.js';
+import {
+  getSystemSettings,
+  sendPaymentSuccessEmail,
+  DEFAULT_CONTACT_SETTINGS,
+  DEFAULT_BANK_SETTINGS,
+  DEFAULT_EMAIL_CONFIG,
+} from '../services/email.js';
 import type { Env, HonoVariables } from '../types.js';
 
 export const adminRouter = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
@@ -268,4 +275,111 @@ adminRouter.post('/tenants', async (c) => {
     },
   });
 });
+
+// 5. Get System Settings (Website Contact, Receiving Bank Account, Email Config)
+adminRouter.get('/settings', async (c) => {
+  const settings = await getSystemSettings(c.env.DB);
+  return c.json({ ok: true, settings });
+});
+
+// 6. Update System Settings
+adminRouter.put('/settings', async (c) => {
+  const body = await c.req.json<{
+    website_contact?: any;
+    bank_account?: any;
+    email_config?: any;
+  }>();
+
+  const now = Date.now();
+
+  if (body.website_contact) {
+    await c.env.DB.prepare(
+      'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+    )
+      .bind('website_contact', JSON.stringify(body.website_contact), now)
+      .run();
+  }
+
+  if (body.bank_account) {
+    await c.env.DB.prepare(
+      'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+    )
+      .bind('bank_account', JSON.stringify(body.bank_account), now)
+      .run();
+  }
+
+  if (body.email_config) {
+    await c.env.DB.prepare(
+      'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+    )
+      .bind('email_config', JSON.stringify(body.email_config), now)
+      .run();
+  }
+
+  const updatedSettings = await getSystemSettings(c.env.DB);
+  return c.json({
+    ok: true,
+    message: 'Cập nhật cấu hình hệ thống thành công!',
+    settings: updatedSettings,
+  });
+});
+
+// 7. Get Email Logs
+adminRouter.get('/email-logs', async (c) => {
+  try {
+    const logs = await c.env.DB.prepare(
+      'SELECT id, to_email, from_email, subject, status, error, metadata, created_at FROM email_logs ORDER BY created_at DESC LIMIT 100'
+    )
+      .bind()
+      .all<{
+        id: string;
+        to_email: string;
+        from_email: string;
+        subject: string;
+        status: string;
+        error?: string;
+        metadata?: string;
+        created_at: number;
+      }>();
+
+    const formatted = (logs.results || []).map((l) => {
+      let meta = null;
+      try {
+        if (l.metadata) meta = JSON.parse(l.metadata);
+      } catch {}
+      return { ...l, metadata: meta };
+    });
+
+    return c.json({ ok: true, logs: formatted });
+  } catch (err: any) {
+    return c.json({ ok: true, logs: [] });
+  }
+});
+
+// 8. Send Test Confirmation Email
+adminRouter.post('/send-test-email', async (c) => {
+  const body = await c.req.json<{ to_email?: string }>();
+  const toEmail = body.to_email?.trim();
+
+  if (!toEmail) {
+    return c.json({ error: 'Vui lòng cung cấp email nhận thư thử nghiệm' }, 400);
+  }
+
+  const res = await sendPaymentSuccessEmail(c.env.DB, {
+    tenantName: 'Doanh nghiệp Thử Nghiệm',
+    toEmail,
+    planName: 'Pro',
+    amountVnd: 299000,
+    days: 30,
+    expiresAt: Date.now() + 30 * 86400 * 1000,
+    invoiceId: `test_${nanoid(10)}`,
+  });
+
+  return c.json({
+    ok: true,
+    message: `Đã xử lý gửi email thử nghiệm tới ${toEmail}! Trạng thái: ${res.status}`,
+    result: res,
+  });
+});
+
 

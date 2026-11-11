@@ -1,8 +1,9 @@
 'use client';
 
-import React from 'react';
+import React, { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { useAuth } from '@/lib/auth-context';
+import { fetchApi } from '@/lib/api';
 import {
   Bot,
   Sparkles,
@@ -124,6 +125,26 @@ const PRICING_PLANS: PricingPlan[] = [
 
 export default function HomePage() {
   const { user } = useAuth();
+  const [contactSettings, setContactSettings] = useState({
+    company_name: 'CÔNG TY TNHH KỸ NĂNG MỀM',
+    brand_name: 'Zalo BaaS',
+    hotline: '0986.000.797',
+    contact_email: 'congtykynangmem@gmail.com',
+    address: 'Số 41 Trần Phú, Phường Phước Hậu, TP. Vĩnh Long, Tỉnh Vĩnh Long',
+    working_hours: '08:00 – 21:00 hàng ngày (Hỗ trợ 24/7)',
+    website_url: 'https://bot.knm.asia',
+    zalo_oa_url: 'https://zalo.me/0986000797',
+  });
+
+  useEffect(() => {
+    fetchApi<{ ok: boolean; contact?: typeof contactSettings }>('/v1/public/settings')
+      .then((res) => {
+        if (res?.contact) {
+          setContactSettings((prev) => ({ ...prev, ...res.contact }));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 selection:bg-blue-600 selection:text-white">
@@ -677,7 +698,7 @@ export default function HomePage() {
                 Giúp doanh nghiệp tối ưu chăm sóc khách hàng và gia tăng doanh số 24/7.
               </p>
               <div className="text-[11px] text-slate-500">
-                Đơn vị chủ quản: <strong>CÔNG TY TNHH KỸ NĂNG MỀM</strong>
+                Đơn vị chủ quản: <strong>{contactSettings.company_name}</strong>
               </div>
             </div>
 
@@ -721,18 +742,19 @@ export default function HomePage() {
               <ul className="space-y-2.5">
                 <li className="flex items-center gap-2 text-slate-300">
                   <PhoneCall className="h-3.5 w-3.5 text-emerald-400" />
-                  <span>Hotline: 0986.000.797</span>
+                  <span>Hotline: <strong className="text-white">{contactSettings.hotline}</strong></span>
                 </li>
-                <li>Email: contact@knm.asia</li>
-                <li>Website: https://bot.knm.asia</li>
-                <li>Hỗ trợ kỹ thuật: 24/7</li>
+                <li>Email: {contactSettings.contact_email}</li>
+                <li>Địa chỉ: {contactSettings.address}</li>
+                <li>Giờ hỗ trợ: {contactSettings.working_hours}</li>
+                <li>Website: {contactSettings.website_url}</li>
               </ul>
             </div>
           </div>
 
           <div className="border-t border-slate-800 pt-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-[11px] text-slate-500">
             <div>
-              © {new Date().getFullYear()} Zalo BaaS • CÔNG TY TNHH KỸ NĂNG MỀM. Bảo lưu mọi quyền.
+              © {new Date().getFullYear()} {contactSettings.brand_name} • {contactSettings.company_name}. Bảo lưu mọi quyền.
             </div>
             <div className="flex gap-4">
               <span>Chính sách bảo mật</span>

@@ -2,18 +2,12 @@
 import { Hono } from 'hono';
 import { nanoid } from 'nanoid';
 import { authMiddleware, requireRole } from '../auth.js';
+import { getSystemSettings, sendPaymentSuccessEmail, DEFAULT_BANK_SETTINGS } from '../services/email.js';
 import type { Env, HonoVariables } from '../types.js';
 
 export const billingRouter = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
 
 billingRouter.use('*', authMiddleware);
-
-// Bank account configuration for VietQR (Standard Napas 247)
-const BANK_CONFIG = {
-  bank_id: 'MB', // MBBank
-  account_no: '0986000797',
-  account_name: 'CONG TY KY NANG MEM',
-};
 
 // 1. Get all available plans
 billingRouter.get('/plans', async (c) => {
@@ -212,6 +206,7 @@ billingRouter.post(
       });
     }
 
+    const { bank } = await getSystemSettings(c.env.DB);
     const invoiceId = `inv_${nanoid(16)}`;
     const now = Date.now();
     // Unique transfer content: ZALOBAAS <short_tenant_id> <short_inv>
@@ -219,10 +214,10 @@ billingRouter.post(
     const shortInv = invoiceId.replace(/^inv_/, '').slice(0, 6).toUpperCase();
     const transferContent = `ZALOBAAS ${shortCode} ${shortInv}`;
 
-    // Standard VietQR Image URL
+    // Standard VietQR Image URL using dynamic bank settings
     const encodedTransfer = encodeURIComponent(transferContent);
-    const encodedAccountName = encodeURIComponent(BANK_CONFIG.account_name);
-    const qrUrl = `https://img.vietqr.io/image/${BANK_CONFIG.bank_id}-${BANK_CONFIG.account_no}-compact2.png?amount=${plan.price_vnd}&addInfo=${encodedTransfer}&accountName=${encodedAccountName}`;
+    const encodedAccountName = encodeURIComponent(bank.account_name);
+    const qrUrl = `https://img.vietqr.io/image/${bank.bank_id}-${bank.account_no}-compact2.png?amount=${plan.price_vnd}&addInfo=${encodedTransfer}&accountName=${encodedAccountName}`;
 
     // Ensure invoices table exists
     await c.env.DB.prepare(`
@@ -256,7 +251,7 @@ billingRouter.post(
         plan_name: plan.name,
         amount_vnd: plan.price_vnd,
         transfer_content: transferContent,
-        bank: BANK_CONFIG,
+        bank: bank,
         qr_url: qrUrl,
         vietqr_url: qrUrl,
         created_at: now,
@@ -265,7 +260,7 @@ billingRouter.post(
   }
 );
 
-// 4. Confirm payment & activate plan (Instant automatic upgrade)
+// 4. Confirm payment & activate plan (Instant automatic upgrade & trigger email notification)
 billingRouter.post(
   '/confirm-payment',
   requireRole(['tenant_admin', 'platform_owner']),
@@ -296,9 +291,13 @@ billingRouter.post(
       .run();
 
     // 2. Upgrade tenant plan immediately & update payment_status and subscription_expires_at
-    const currentTenant = await c.env.DB.prepare('SELECT subscription_expires_at FROM tenants WHERE id = ?')
+    const currentTenant = await c.env.DB.prepare('SELECT name, contact_email, subscription_expires_at FROM tenants WHERE id = ?')
       .bind(tenantId)
-      .first<{ subscription_expires_at?: number | null }>();
+      .first<{ name?: string; contact_email?: string; subscription_expires_at?: number | null }>();
+
+    const plan = await c.env.DB.prepare('SELECT name, price_vnd FROM plans WHERE id = ?')
+      .bind(invoice.plan_id)
+      .first<{ name: string; price_vnd: number }>();
 
     const baseTime = currentTenant?.subscription_expires_at && currentTenant.subscription_expires_at > now
       ? currentTenant.subscription_expires_at
@@ -311,10 +310,35 @@ billingRouter.post(
       .bind(invoice.plan_id, 'active', 'paid', now, newExpiresAt, tenantId)
       .run();
 
+    // 3. Dispatch Payment Confirmation Email from congtykynangmem@gmail.com
+    const targetEmail = currentTenant?.contact_email || user.email;
+    let emailResult = null;
+    if (targetEmail) {
+      emailResult = await sendPaymentSuccessEmail(c.env.DB, {
+        tenantName: currentTenant?.name || 'Doanh nghiệp',
+        toEmail: targetEmail,
+        planName: plan?.name || invoice.plan_id.toUpperCase(),
+        amountVnd: plan?.price_vnd || 0,
+        days: 30,
+        expiresAt: newExpiresAt,
+        invoiceId: invoice.id,
+        tenantId: tenantId || undefined,
+      });
+    }
+
     return c.json({
       ok: true,
       message: 'Xác nhận thanh toán thành công! Gói cước của bạn đã được kích hoạt.',
       plan_id: invoice.plan_id,
+      email_sent: Boolean(emailResult?.ok),
+      email_status: emailResult?.status,
     });
   }
 );
+
+// 5. Get current receiving bank info
+billingRouter.get('/bank-info', async (c) => {
+  const { bank } = await getSystemSettings(c.env.DB);
+  return c.json({ ok: true, bank });
+});
+

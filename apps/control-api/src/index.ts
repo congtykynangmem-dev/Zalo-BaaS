@@ -11,6 +11,7 @@ import { settingsRouter } from './routes/settings.js';
 import { customersRouter } from './routes/customers.js';
 import { billingRouter } from './routes/billing.js';
 import { adminRouter } from './routes/admin.js';
+import { getSystemSettings } from './services/email.js';
 import type { Env, HonoVariables } from './types.js';
 
 export const app = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
@@ -35,6 +36,23 @@ app.get('/health', (c) => {
     service: 'control-api',
     timestamp: Date.now(),
   });
+});
+
+// Public settings for landing page (Contact info & bank account)
+app.get('/v1/public/settings', async (c) => {
+  try {
+    const { contact, bank } = await getSystemSettings(c.env.DB);
+    return c.json({
+      ok: true,
+      contact,
+      bank,
+    });
+  } catch (err: any) {
+    return c.json({
+      ok: false,
+      error: err?.message || 'Error loading public settings',
+    });
+  }
 });
 
 // Mount modular sub-routers under /v1

@@ -178,6 +178,64 @@ function initDatabase() {
         console.log(`[Zalo-BaaS] Upgraded ${adminEmail} to platform_owner`);
       }
 
+      // Ensure system_settings and email_logs tables exist
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS system_settings (
+          key TEXT PRIMARY KEY,
+          value TEXT NOT NULL,
+          updated_at INTEGER NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS email_logs (
+          id TEXT PRIMARY KEY,
+          to_email TEXT NOT NULL,
+          from_email TEXT NOT NULL DEFAULT 'congtykynangmem@gmail.com',
+          subject TEXT NOT NULL,
+          content_html TEXT NOT NULL,
+          status TEXT NOT NULL DEFAULT 'sent',
+          error TEXT,
+          metadata TEXT,
+          created_at INTEGER NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_email_logs_to ON email_logs(to_email, created_at);
+      `);
+
+      // Seed initial default system settings if not exists
+      const defaultContact = JSON.stringify({
+        company_name: 'CÔNG TY TNHH KỸ NĂNG MỀM',
+        brand_name: 'Zalo BaaS',
+        hotline: '0986.000.797',
+        contact_email: 'congtykynangmem@gmail.com',
+        address: 'Số 41 Trần Phú, Phường Phước Hậu, TP. Vĩnh Long, Tỉnh Vĩnh Long',
+        working_hours: '08:00 – 21:00 hàng ngày (Hỗ trợ 24/7)',
+        website_url: 'https://bot.knm.asia',
+        zalo_oa_url: 'https://zalo.me/0986000797',
+      });
+
+      const defaultBank = JSON.stringify({
+        bank_id: 'MB',
+        bank_name: 'Ngân hàng Quân Đội (MBBank)',
+        account_no: '0986000797',
+        account_name: 'CONG TY KY NANG MEM',
+      });
+
+      const defaultEmailConfig = JSON.stringify({
+        sender_email: 'congtykynangmem@gmail.com',
+        sender_name: 'Zalo BaaS - Kỹ Năng Mềm',
+        smtp_host: 'smtp.gmail.com',
+        smtp_port: 465,
+        smtp_user: 'congtykynangmem@gmail.com',
+        smtp_pass: '',
+        auto_send_on_payment: true,
+      });
+
+      db.prepare("INSERT OR IGNORE INTO system_settings (key, value, updated_at) VALUES ('website_contact', ?, ?)")
+        .run(defaultContact, Date.now());
+      db.prepare("INSERT OR IGNORE INTO system_settings (key, value, updated_at) VALUES ('bank_account', ?, ?)")
+        .run(defaultBank, Date.now());
+      db.prepare("INSERT OR IGNORE INTO system_settings (key, value, updated_at) VALUES ('email_config', ?, ?)")
+        .run(defaultEmailConfig, Date.now());
+
       // Ensure registered enterprise user fivestarkimky@gmail.com is present with an active tenant
       try {
         const fivestarUser = db.prepare("SELECT id, tenant_id FROM users WHERE email = 'fivestarkimky@gmail.com'").get();

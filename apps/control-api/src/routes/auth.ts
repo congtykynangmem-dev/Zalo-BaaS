@@ -12,6 +12,7 @@ authRouter.post('/register', async (c) => {
     email?: string;
     password?: string;
     tenant_name?: string;
+    plan_id?: string;
   }>();
 
   if (!body.email || !body.password || !body.tenant_name) {
@@ -20,6 +21,7 @@ authRouter.post('/register', async (c) => {
 
   const email = body.email.toLowerCase().trim();
   const tenantName = body.tenant_name.trim();
+  const planId = (body.plan_id || 'trial').toLowerCase();
 
   // Check if user already exists
   const existingUser = await c.env.DB.prepare('SELECT id FROM users WHERE email = ?')
@@ -33,14 +35,17 @@ authRouter.post('/register', async (c) => {
   const tenantId = `tenant_${nanoid(12)}`;
   const userId = `user_${nanoid(12)}`;
   const now = Date.now();
+  const isTrial = planId === 'trial';
+  const expiresAt = now + (isTrial ? 7 : 30) * 86400 * 1000;
+  const paymentStatus = isTrial ? 'trial' : 'pending';
   const passwordHash = await hashPassword(body.password);
 
   // Create tenant
   await c.env.DB.prepare(
-    `INSERT INTO tenants (id, name, plan_id, status, contact_email, created_at)
-     VALUES (?, ?, 'starter', 'active', ?, ?)`
+    `INSERT INTO tenants (id, name, plan_id, status, contact_email, created_at, subscription_started_at, subscription_expires_at, payment_status)
+     VALUES (?, ?, ?, 'active', ?, ?, ?, ?, ?)`
   )
-    .bind(tenantId, tenantName, email, now)
+    .bind(tenantId, tenantName, planId, email, now, now, expiresAt, paymentStatus)
     .run();
 
   // Create user as tenant_admin
@@ -69,7 +74,9 @@ authRouter.post('/register', async (c) => {
       tenant: {
         id: tenantId,
         name: tenantName,
-        plan_id: 'starter',
+        plan_id: planId,
+        payment_status: paymentStatus,
+        subscription_expires_at: expiresAt,
       },
     },
   });

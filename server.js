@@ -113,6 +113,34 @@ function initDatabase() {
         console.log('[Zalo-BaaS] Added raw_content column to documents table');
       }
 
+      // Ensure tenants table has subscription_started_at, subscription_expires_at and payment_status columns
+      const tenantCols = db.prepare('PRAGMA table_info(tenants)').all().map((c) => c.name);
+      if (!tenantCols.includes('subscription_started_at')) {
+        db.exec('ALTER TABLE tenants ADD COLUMN subscription_started_at INTEGER;');
+      }
+      if (!tenantCols.includes('subscription_expires_at')) {
+        db.exec('ALTER TABLE tenants ADD COLUMN subscription_expires_at INTEGER;');
+      }
+      if (!tenantCols.includes('payment_status')) {
+        db.exec("ALTER TABLE tenants ADD COLUMN payment_status TEXT DEFAULT 'paid';");
+      }
+
+      // Backfill missing subscription_expires_at for existing tenants
+      db.exec(`
+        UPDATE tenants
+        SET subscription_started_at = COALESCE(subscription_started_at, created_at),
+            subscription_expires_at = COALESCE(
+              subscription_expires_at,
+              CASE
+                WHEN id = 'tenant_system' THEN created_at + 315360000000
+                WHEN LOWER(plan_id) = 'trial' THEN created_at + 604800000
+                ELSE created_at + 2592000000
+              END
+            ),
+            payment_status = COALESCE(payment_status, CASE WHEN LOWER(plan_id) = 'trial' THEN 'trial' ELSE 'paid' END)
+        WHERE subscription_expires_at IS NULL OR payment_status IS NULL;
+      `);
+
       // Upsert latest commercial plans (Trial 7 days, Starter 99k, Pro 299k, Enterprise 499k)
       db.exec(`
         INSERT OR REPLACE INTO plans (id, name, price_vnd, max_bots, monthly_ai_messages, max_documents, max_doc_mb, features)

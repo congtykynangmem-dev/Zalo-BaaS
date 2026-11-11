@@ -52,7 +52,8 @@ billingRouter.get('/subscription', async (c) => {
   let tenant = null;
   if (tenantId) {
     tenant = await c.env.DB.prepare(`
-      SELECT t.id, t.name, t.plan_id, t.status,
+      SELECT t.id, t.name, t.plan_id, t.status, t.created_at,
+             t.subscription_started_at, t.subscription_expires_at, t.payment_status,
              COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
              COALESCE(p.price_vnd, 99000) as price_vnd,
              COALESCE(p.max_bots, 1) as max_bots,
@@ -68,6 +69,10 @@ billingRouter.get('/subscription', async (c) => {
         name: string;
         plan_id: string;
         status: string;
+        created_at: number;
+        subscription_started_at?: number | null;
+        subscription_expires_at?: number | null;
+        payment_status?: string | null;
         plan_name: string;
         price_vnd: number;
         max_bots: number;
@@ -82,12 +87,20 @@ billingRouter.get('/subscription', async (c) => {
     name: 'Doanh nghiệp',
     plan_id: 'starter',
     status: 'active',
+    created_at: Date.now(),
+    subscription_started_at: Date.now(),
+    subscription_expires_at: Date.now() + 2592000000,
+    payment_status: 'paid',
     plan_name: 'Starter',
     price_vnd: 99000,
     max_bots: 1,
     monthly_ai_messages: 3000,
     max_documents: 10,
   };
+
+  const now = Date.now();
+  const expiresAt = effectiveTenant.subscription_expires_at || (effectiveTenant.created_at + 2592000000);
+  const daysLeft = Math.ceil((expiresAt - now) / 86400000);
 
   // Count current bots
   const botCount = await c.env.DB.prepare(
@@ -141,6 +154,11 @@ billingRouter.get('/subscription', async (c) => {
       plan_name: effectiveTenant.plan_name,
       price_vnd: effectiveTenant.price_vnd,
       status: effectiveTenant.status,
+      subscription_started_at: effectiveTenant.subscription_started_at || null,
+      subscription_expires_at: expiresAt,
+      payment_status: effectiveTenant.payment_status || 'paid',
+      days_left: daysLeft,
+      is_expired: daysLeft <= 0,
       bots: botsQuota,
       documents: docsQuota,
       ai_messages: aiQuota,
@@ -179,8 +197,12 @@ billingRouter.post(
 
     // If free / trial plan (price is 0), activate immediately without payment
     if (plan.price_vnd === 0) {
-      await c.env.DB.prepare('UPDATE tenants SET plan_id = ? WHERE id = ?')
-        .bind(plan.id, tenantId)
+      const now = Date.now();
+      const trialExpiresAt = now + 7 * 86400 * 1000;
+      await c.env.DB.prepare(
+        'UPDATE tenants SET plan_id = ?, status = ?, payment_status = ?, subscription_started_at = COALESCE(subscription_started_at, ?), subscription_expires_at = ? WHERE id = ?'
+      )
+        .bind(plan.id, 'active', 'trial', now, trialExpiresAt, tenantId)
         .run();
       return c.json({
         ok: true,
@@ -273,9 +295,20 @@ billingRouter.post(
       .bind('paid', now, invoice.id)
       .run();
 
-    // 2. Upgrade tenant plan immediately
-    await c.env.DB.prepare('UPDATE tenants SET plan_id = ?, status = ? WHERE id = ?')
-      .bind(invoice.plan_id, 'active', tenantId)
+    // 2. Upgrade tenant plan immediately & update payment_status and subscription_expires_at
+    const currentTenant = await c.env.DB.prepare('SELECT subscription_expires_at FROM tenants WHERE id = ?')
+      .bind(tenantId)
+      .first<{ subscription_expires_at?: number | null }>();
+
+    const baseTime = currentTenant?.subscription_expires_at && currentTenant.subscription_expires_at > now
+      ? currentTenant.subscription_expires_at
+      : now;
+    const newExpiresAt = baseTime + 30 * 86400 * 1000;
+
+    await c.env.DB.prepare(
+      'UPDATE tenants SET plan_id = ?, status = ?, payment_status = ?, subscription_started_at = COALESCE(subscription_started_at, ?), subscription_expires_at = ? WHERE id = ?'
+    )
+      .bind(invoice.plan_id, 'active', 'paid', now, newExpiresAt, tenantId)
       .run();
 
     return c.json({

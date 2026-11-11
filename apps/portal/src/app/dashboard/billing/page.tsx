@@ -34,6 +34,11 @@ interface Subscription {
   plan_id: string;
   plan_name: string;
   status: string;
+  subscription_started_at?: number | null;
+  subscription_expires_at?: number | null;
+  payment_status?: string;
+  days_left?: number;
+  is_expired?: boolean;
   bots: { current: number; max: number };
   documents: { current: number; max: number };
   ai_messages: { current: number; max: number };
@@ -131,6 +136,11 @@ export default function BillingPage() {
           plan_id: (s.plan_id || 'starter').toLowerCase(),
           plan_name: s.plan_name || 'Starter',
           status: s.status || 'active',
+          subscription_started_at: s.subscription_started_at || null,
+          subscription_expires_at: s.subscription_expires_at || null,
+          payment_status: s.payment_status || 'paid',
+          days_left: s.days_left,
+          is_expired: s.is_expired,
           bots: s.bots || s.usage?.bots || { current: 0, max: 1 },
           documents: s.documents || s.usage?.documents || { current: 0, max: 5 },
           ai_messages: s.ai_messages || s.usage?.ai_messages || { current: 0, max: 1000 },
@@ -250,17 +260,57 @@ export default function BillingPage() {
             <span className="text-xs font-semibold uppercase tracking-wider text-blue-600">
               Gói hiện tại
             </span>
-            <div className="flex items-center gap-3 mt-1">
+            <div className="flex flex-wrap items-center gap-3 mt-1">
               <h2 className="text-xl font-bold text-slate-900">{effectiveSub.plan_name}</h2>
               <span className="rounded-full bg-emerald-100 px-3 py-0.5 text-xs font-bold text-emerald-800">
                 {effectiveSub.status === 'active' ? 'Đang hoạt động' : effectiveSub.status}
               </span>
+              {/* Payment status badge */}
+              {effectiveSub.payment_status === 'paid' && (
+                <span className="rounded-full bg-green-50 px-2.5 py-0.5 text-xs font-bold text-green-700 border border-green-200">
+                  ✓ Đã thanh toán
+                </span>
+              )}
+              {effectiveSub.payment_status === 'trial' && (
+                <span className="rounded-full bg-amber-50 px-2.5 py-0.5 text-xs font-bold text-amber-700 border border-amber-200">
+                  ★ Dùng thử
+                </span>
+              )}
+              {effectiveSub.payment_status === 'pending' && (
+                <span className="rounded-full bg-yellow-50 px-2.5 py-0.5 text-xs font-bold text-yellow-800 border border-yellow-200">
+                  ⏳ Chờ thanh toán
+                </span>
+              )}
+              {effectiveSub.payment_status === 'expired' && (
+                <span className="rounded-full bg-red-50 px-2.5 py-0.5 text-xs font-bold text-red-700 border border-red-200">
+                  ✕ Quá hạn
+                </span>
+              )}
             </div>
           </div>
 
-          <div className="flex items-center gap-2 text-xs font-medium text-slate-500">
-            <Clock className="h-4 w-4 text-blue-500" />
-            <span>Chu kỳ gia hạn tự động hàng tháng</span>
+          <div className="flex flex-col sm:items-end gap-1 text-xs">
+            {effectiveSub.days_left !== undefined ? (
+              <div className="flex items-center gap-2 font-semibold">
+                <Clock className="h-4 w-4 text-blue-600" />
+                {effectiveSub.is_expired ? (
+                  <span className="text-red-600 font-bold bg-red-50 px-2 py-0.5 rounded-lg border border-red-200">
+                    Gói đã hết hạn
+                  </span>
+                ) : (
+                  <span className="text-blue-700 bg-blue-50 px-2.5 py-0.5 rounded-lg border border-blue-200">
+                    Thời hạn còn: <strong>{effectiveSub.days_left} ngày</strong>
+                  </span>
+                )}
+              </div>
+            ) : null}
+            {effectiveSub.subscription_expires_at ? (
+              <span className="text-slate-400 text-[11px]">
+                Hết hạn vào: {new Date(effectiveSub.subscription_expires_at).toLocaleDateString('vi-VN')}
+              </span>
+            ) : (
+              <span className="text-slate-400 text-[11px]">Chu kỳ gia hạn hàng tháng</span>
+            )}
           </div>
         </div>
 

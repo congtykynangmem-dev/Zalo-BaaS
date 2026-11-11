@@ -88,13 +88,15 @@ export default function DashboardLayout({
       <aside className="fixed inset-y-0 left-0 z-50 flex w-64 flex-col border-r border-slate-200 bg-white shadow-sm">
         {/* Brand */}
         <div className="flex h-16 items-center gap-3 border-b border-slate-100 px-6">
-          <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
-            <Bot className="h-6 w-6" />
-          </div>
-          <div>
-            <span className="font-bold text-slate-900 tracking-tight">Zalo BaaS</span>
-            <span className="block text-xs text-blue-600 font-medium">bot.knm.asia</span>
-          </div>
+          <Link href="/" className="flex items-center gap-3 hover:opacity-90 transition">
+            <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-white shadow-sm">
+              <Bot className="h-6 w-6" />
+            </div>
+            <div>
+              <span className="font-bold text-slate-900 tracking-tight">Zalo BaaS</span>
+              <span className="block text-xs text-blue-600 font-medium">bot.knm.asia</span>
+            </div>
+          </Link>
         </div>
 
         {/* Tenant Info Card */}

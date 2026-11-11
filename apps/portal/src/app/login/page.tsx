@@ -5,7 +5,7 @@ import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useAuth, UserProfile } from '@/lib/auth-context';
 import { fetchApi } from '@/lib/api';
-import { Bot, Lock, Mail, ArrowRight } from 'lucide-react';
+import { Bot, Lock, Mail, ArrowRight, ChevronLeft } from 'lucide-react';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -36,8 +36,23 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="flex min-h-screen items-center justify-center p-4">
+    <div className="flex min-h-screen items-center justify-center p-4 bg-gradient-to-b from-slate-50 via-blue-50/20 to-slate-100">
       <div className="w-full max-w-md rounded-2xl bg-white p-8 shadow-xl border border-slate-100">
+        <div className="mb-6 flex items-center justify-between">
+          <Link
+            href="/"
+            className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-blue-600 transition"
+          >
+            <ChevronLeft className="h-4 w-4" /> Về trang chủ
+          </Link>
+          <div className="text-xs text-slate-400">
+            Chưa có tài khoản?{' '}
+            <Link href="/register" className="font-semibold text-blue-600 hover:underline">
+              Đăng ký
+            </Link>
+          </div>
+        </div>
+
         <div className="mb-8 text-center">
           <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-50 text-blue-600">
             <Bot className="h-8 w-8" />

@@ -45,6 +45,11 @@ interface TenantItem {
   status: 'active' | 'suspended';
   contact_email: string;
   created_at: number;
+  subscription_started_at?: number | null;
+  subscription_expires_at?: number | null;
+  payment_status?: 'paid' | 'pending' | 'trial' | 'expired';
+  days_left?: number;
+  is_expired?: boolean;
   bot_count: number;
   doc_count: number;
   ai_messages_count: number;
@@ -65,6 +70,8 @@ export default function AdminPage() {
   const [newAdminEmail, setNewAdminEmail] = useState('');
   const [newAdminPassword, setNewAdminPassword] = useState('');
   const [newPlanId, setNewPlanId] = useState('starter');
+  const [newSubscriptionDays, setNewSubscriptionDays] = useState(30);
+  const [newPaymentStatus, setNewPaymentStatus] = useState<'paid' | 'pending' | 'trial'>('paid');
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState('');
 
@@ -72,6 +79,8 @@ export default function AdminPage() {
   const [editingTenant, setEditingTenant] = useState<TenantItem | null>(null);
   const [editPlanId, setEditPlanId] = useState('');
   const [editStatus, setEditStatus] = useState<'active' | 'suspended'>('active');
+  const [editPaymentStatus, setEditPaymentStatus] = useState<'paid' | 'pending' | 'trial' | 'expired'>('paid');
+  const [editExtendDays, setEditExtendDays] = useState(0);
   const [updatingTenant, setUpdatingTenant] = useState(false);
 
   useEffect(() => {
@@ -134,6 +143,8 @@ export default function AdminPage() {
           password: newAdminPassword.trim(),
           admin_password: newAdminPassword.trim(),
           plan_id: newPlanId,
+          subscription_days: newPlanId === 'trial' ? 7 : newSubscriptionDays,
+          payment_status: newPlanId === 'trial' ? 'trial' : newPaymentStatus,
         }),
       });
 
@@ -141,6 +152,8 @@ export default function AdminPage() {
       setNewTenantName('');
       setNewAdminEmail('');
       setNewAdminPassword('');
+      setNewSubscriptionDays(30);
+      setNewPaymentStatus('paid');
       await loadAdminData();
     } catch (err: unknown) {
       setCreateError(err instanceof Error ? err.message : 'Lỗi tạo doanh nghiệp');
@@ -161,10 +174,13 @@ export default function AdminPage() {
         body: JSON.stringify({
           plan_id: editPlanId,
           status: editStatus,
+          payment_status: editPaymentStatus,
+          extend_days: editExtendDays > 0 ? editExtendDays : undefined,
         }),
       });
 
       setEditingTenant(null);
+      setEditExtendDays(0);
       await loadAdminData();
     } catch (err) {
       alert('Lỗi cập nhật doanh nghiệp');
@@ -286,24 +302,26 @@ export default function AdminPage() {
           <table className="w-full text-left text-xs">
             <thead className="border-b border-slate-100 bg-slate-50/75 text-[11px] font-bold text-slate-500 uppercase tracking-wider">
               <tr>
-                <th className="py-3.5 px-6">Doanh nghiệp</th>
-                <th className="py-3.5 px-6">Gói cước</th>
-                <th className="py-3.5 px-6">Trạng thái</th>
-                <th className="py-3.5 px-6">Tài nguyên (Bot / RAG)</th>
-                <th className="py-3.5 px-6">Lưu lượng AI</th>
-                <th className="py-3.5 px-6">Ngày tạo</th>
-                <th className="py-3.5 px-6 text-right">Quản trị</th>
+                <th className="py-3.5 px-5">Doanh nghiệp</th>
+                <th className="py-3.5 px-4">Gói cước</th>
+                <th className="py-3.5 px-4">Thời hạn gói</th>
+                <th className="py-3.5 px-4">Thanh toán</th>
+                <th className="py-3.5 px-4">Trạng thái</th>
+                <th className="py-3.5 px-4">Tài nguyên (Bot / RAG)</th>
+                <th className="py-3.5 px-4">Lưu lượng AI</th>
+                <th className="py-3.5 px-4">Ngày tạo</th>
+                <th className="py-3.5 px-5 text-right">Quản trị</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100 text-slate-700">
               {filteredTenants.map((t) => (
                 <tr key={t.id} className="hover:bg-slate-50/70 transition">
-                  <td className="py-4 px-6">
+                  <td className="py-4 px-5">
                     <div className="font-bold text-slate-900">{t.name}</div>
                     <div className="text-[11px] text-slate-400">{t.contact_email}</div>
                   </td>
 
-                  <td className="py-4 px-6">
+                  <td className="py-4 px-4">
                     <span
                       className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${
                         t.plan_id === 'enterprise'
@@ -319,7 +337,58 @@ export default function AdminPage() {
                     </span>
                   </td>
 
-                  <td className="py-4 px-6">
+                  {/* Subscription Expiry & Days Left */}
+                  <td className="py-4 px-4">
+                    {t.days_left !== undefined ? (
+                      <div>
+                        {t.is_expired ? (
+                          <span className="inline-flex items-center gap-1 text-red-700 bg-red-50 px-2 py-0.5 rounded-full text-[11px] font-bold border border-red-200">
+                            <Clock className="h-3 w-3" /> Hết hạn (0 ngày)
+                          </span>
+                        ) : (
+                          <span
+                            className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-bold border ${
+                              t.days_left <= 3
+                                ? 'text-amber-700 bg-amber-50 border-amber-200'
+                                : 'text-emerald-700 bg-emerald-50 border-emerald-200'
+                            }`}
+                          >
+                            <Clock className="h-3 w-3" /> Còn {t.days_left} ngày
+                          </span>
+                        )}
+                        {t.subscription_expires_at && (
+                          <div className="text-[10px] text-slate-400 mt-1">
+                            Hạn: {new Date(t.subscription_expires_at).toLocaleDateString('vi-VN')}
+                          </div>
+                        )}
+                      </div>
+                    ) : (
+                      <span className="text-slate-400 text-[11px]">-</span>
+                    )}
+                  </td>
+
+                  {/* Payment Status */}
+                  <td className="py-4 px-4">
+                    {t.payment_status === 'paid' ? (
+                      <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full text-[11px] font-semibold border border-emerald-200">
+                        <CheckCircle2 className="h-3 w-3" /> Đã thanh toán
+                      </span>
+                    ) : t.payment_status === 'trial' ? (
+                      <span className="inline-flex items-center gap-1 text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full text-[11px] font-semibold border border-amber-200">
+                        <Sparkles className="h-3 w-3" /> Dùng thử
+                      </span>
+                    ) : t.payment_status === 'expired' ? (
+                      <span className="inline-flex items-center gap-1 text-red-700 bg-red-50 px-2 py-0.5 rounded-full text-[11px] font-semibold border border-red-200">
+                        Quá hạn
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-yellow-700 bg-yellow-50 px-2 py-0.5 rounded-full text-[11px] font-semibold border border-yellow-200">
+                        Chờ thanh toán
+                      </span>
+                    )}
+                  </td>
+
+                  <td className="py-4 px-4">
                     {t.status === 'active' ? (
                       <span className="inline-flex items-center gap-1 text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full text-[11px] font-semibold border border-emerald-200">
                         <CheckCircle2 className="h-3 w-3" /> Hoạt động
@@ -331,8 +400,8 @@ export default function AdminPage() {
                     )}
                   </td>
 
-                  <td className="py-4 px-6">
-                    <div className="space-y-1.5 min-w-[130px]">
+                  <td className="py-4 px-4">
+                    <div className="space-y-1.5 min-w-[120px]">
                       <div>
                         <div className="flex items-center justify-between text-[11px] mb-0.5">
                           <span className="text-slate-500 font-medium">Bot:</span>
@@ -360,8 +429,8 @@ export default function AdminPage() {
                     </div>
                   </td>
 
-                  <td className="py-4 px-6">
-                    <div className="space-y-1 min-w-[130px]">
+                  <td className="py-4 px-4">
+                    <div className="space-y-1 min-w-[120px]">
                       <div className="flex items-center justify-between text-[11px] mb-0.5">
                         <span className="text-slate-500 font-medium">AI msgs:</span>
                         <span className="font-bold text-emerald-700 font-mono">
@@ -377,16 +446,18 @@ export default function AdminPage() {
                     </div>
                   </td>
 
-                  <td className="py-4 px-6 text-slate-400">
+                  <td className="py-4 px-4 text-slate-400">
                     {new Date(t.created_at).toLocaleDateString('vi-VN')}
                   </td>
 
-                  <td className="py-4 px-6 text-right">
+                  <td className="py-4 px-5 text-right">
                     <button
                       onClick={() => {
                         setEditingTenant(t);
                         setEditPlanId(t.plan_id);
                         setEditStatus(t.status);
+                        setEditPaymentStatus((t.payment_status as any) || 'paid');
+                        setEditExtendDays(0);
                       }}
                       className="rounded-xl border border-slate-200 px-3 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-50 transition"
                     >
@@ -469,7 +540,17 @@ export default function AdminPage() {
                 </label>
                 <select
                   value={newPlanId}
-                  onChange={(e) => setNewPlanId(e.target.value)}
+                  onChange={(e) => {
+                    const pid = e.target.value;
+                    setNewPlanId(pid);
+                    if (pid === 'trial') {
+                      setNewSubscriptionDays(7);
+                      setNewPaymentStatus('trial');
+                    } else {
+                      setNewSubscriptionDays(30);
+                      setNewPaymentStatus('paid');
+                    }
+                  }}
                   className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
                 >
                   <option value="trial">Dùng thử (7 ngày - Miễn phí 0 đ - 1 Bot)</option>
@@ -477,6 +558,40 @@ export default function AdminPage() {
                   <option value="pro">Pro (299.000 đ/tháng - 3 Bots)</option>
                   <option value="enterprise">Enterprise (499.000 đ/tháng - 5 Bots)</option>
                 </select>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Thời hạn khởi tạo
+                  </label>
+                  <select
+                    value={newSubscriptionDays}
+                    onChange={(e) => setNewSubscriptionDays(Number(e.target.value))}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
+                  >
+                    <option value={7}>7 ngày (Dùng thử)</option>
+                    <option value={30}>30 ngày (1 tháng)</option>
+                    <option value={90}>90 ngày (3 tháng)</option>
+                    <option value={180}>180 ngày (6 tháng)</option>
+                    <option value={365}>365 ngày (1 năm)</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Trạng thái thanh toán
+                  </label>
+                  <select
+                    value={newPaymentStatus}
+                    onChange={(e) => setNewPaymentStatus(e.target.value as any)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
+                  >
+                    <option value="paid">Đã thanh toán (Paid)</option>
+                    <option value="pending">Chờ thanh toán (Pending)</option>
+                    <option value="trial">Dùng thử (Trial)</option>
+                  </select>
+                </div>
               </div>
 
               <div className="pt-2 flex justify-end gap-3">
@@ -549,18 +664,76 @@ export default function AdminPage() {
                 </select>
               </div>
 
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Trạng thái hoạt động
+                  </label>
+                  <select
+                    value={editStatus}
+                    onChange={(e) => setEditStatus(e.target.value as 'active' | 'suspended')}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
+                  >
+                    <option value="active">Hoạt động bình thường</option>
+                    <option value="suspended">Tạm khóa tài khoản</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-700 mb-1">
+                    Trạng thái thanh toán
+                  </label>
+                  <select
+                    value={editPaymentStatus}
+                    onChange={(e) => setEditPaymentStatus(e.target.value as any)}
+                    className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
+                  >
+                    <option value="paid">Đã thanh toán (Paid)</option>
+                    <option value="pending">Chờ thanh toán (Pending)</option>
+                    <option value="trial">Dùng thử (Trial)</option>
+                    <option value="expired">Hết hạn (Expired)</option>
+                  </select>
+                </div>
+              </div>
+
               <div>
                 <label className="block text-xs font-semibold text-slate-700 mb-1">
-                  Trạng thái hoạt động
+                  Gia hạn thời hạn sử dụng gói
                 </label>
-                <select
-                  value={editStatus}
-                  onChange={(e) => setEditStatus(e.target.value as 'active' | 'suspended')}
-                  className="w-full rounded-xl border border-slate-200 px-3 py-2 text-xs focus:border-blue-600 focus:outline-none"
-                >
-                  <option value="active">Hoạt động bình thường</option>
-                  <option value="suspended">Tạm khóa tài khoản</option>
-                </select>
+                <div className="text-[11px] text-slate-500 mb-2">
+                  Hạn hiện tại:{' '}
+                  <strong className="text-slate-800">
+                    {editingTenant.subscription_expires_at
+                      ? new Date(editingTenant.subscription_expires_at).toLocaleDateString('vi-VN')
+                      : 'Chưa thiết lập'}
+                  </strong>{' '}
+                  {editingTenant.days_left !== undefined && (
+                    <span className={editingTenant.is_expired ? 'text-red-600 font-bold' : 'text-emerald-600 font-bold'}>
+                      ({editingTenant.is_expired ? 'Đã hết hạn' : `Còn ${editingTenant.days_left} ngày`})
+                    </span>
+                  )}
+                </div>
+                <div className="flex flex-wrap gap-1.5 mb-2">
+                  {[7, 30, 90, 180, 365].map((d) => (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => setEditExtendDays(editExtendDays === d ? 0 : d)}
+                      className={`px-2.5 py-1 rounded-lg text-xs font-semibold border transition ${
+                        editExtendDays === d
+                          ? 'bg-blue-600 text-white border-blue-600 shadow-sm'
+                          : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      +{d} ngày
+                    </button>
+                  ))}
+                </div>
+                {editExtendDays > 0 && (
+                  <div className="rounded-lg bg-emerald-50 p-2 text-[11px] text-emerald-700 border border-emerald-200 font-medium">
+                    ✓ Sẽ cộng thêm {editExtendDays} ngày vào thời hạn của doanh nghiệp này khi nhấn &quot;Lưu thay đổi&quot;.
+                  </div>
+                )}
               </div>
 
               <div className="pt-2 flex justify-end gap-3">

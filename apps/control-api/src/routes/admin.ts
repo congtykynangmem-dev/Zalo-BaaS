@@ -80,6 +80,9 @@ adminRouter.get('/tenants', async (c) => {
       SELECT t.id, t.name, t.plan_id, t.status,
              COALESCE(NULLIF(t.contact_email, ''), (SELECT email FROM users u WHERE u.tenant_id = t.id LIMIT 1), 'Chưa cập nhật') as contact_email,
              t.created_at,
+             t.subscription_started_at,
+             COALESCE(t.subscription_expires_at, t.created_at + 2592000000) as subscription_expires_at,
+             COALESCE(t.payment_status, 'paid') as payment_status,
              COALESCE(p.name, UPPER(t.plan_id)) as plan_name,
              COALESCE(p.price_vnd, 0) as price_vnd,
              COALESCE(p.max_bots, 1) as max_bots,
@@ -98,6 +101,9 @@ adminRouter.get('/tenants', async (c) => {
       status: string;
       contact_email: string;
       created_at: number;
+      subscription_started_at?: number | null;
+      subscription_expires_at: number;
+      payment_status: 'paid' | 'pending' | 'trial' | 'expired';
       plan_name: string;
       price_vnd: number;
       max_bots: number;
@@ -108,9 +114,21 @@ adminRouter.get('/tenants', async (c) => {
       ai_messages_count: number;
     }>();
 
+    const now = Date.now();
+    const formattedTenants = (rows?.results || []).map((t) => {
+      const expiresAt = t.subscription_expires_at || (t.created_at + 2592000000);
+      const daysLeft = Math.ceil((expiresAt - now) / 86400000);
+      return {
+        ...t,
+        subscription_expires_at: expiresAt,
+        days_left: daysLeft,
+        is_expired: daysLeft <= 0,
+      };
+    });
+
     return c.json({
       ok: true,
-      tenants: rows?.results || [],
+      tenants: formattedTenants,
     });
   } catch (err: unknown) {
     const msg = err instanceof Error ? err.message : 'Unknown error';
@@ -126,11 +144,14 @@ adminRouter.patch('/tenants/:id', async (c) => {
     status?: 'active' | 'suspended' | 'cancelled';
     name?: string;
     contact_email?: string;
+    payment_status?: 'paid' | 'pending' | 'trial' | 'expired';
+    subscription_expires_at?: number;
+    extend_days?: number;
   }>();
 
-  const tenant = await c.env.DB.prepare('SELECT id FROM tenants WHERE id = ?')
+  const tenant = await c.env.DB.prepare('SELECT id, subscription_expires_at FROM tenants WHERE id = ?')
     .bind(tenantId)
-    .first();
+    .first<{ id: string; subscription_expires_at: number | null }>();
 
   if (!tenant) {
     return c.json({ error: 'Doanh nghiệp không tồn tại' }, 404);
@@ -155,6 +176,19 @@ adminRouter.patch('/tenants/:id', async (c) => {
     updates.push('contact_email = ?');
     params.push(body.contact_email.trim());
   }
+  if (body.payment_status !== undefined) {
+    updates.push('payment_status = ?');
+    params.push(body.payment_status);
+  }
+  if (body.subscription_expires_at !== undefined) {
+    updates.push('subscription_expires_at = ?');
+    params.push(body.subscription_expires_at);
+  } else if (body.extend_days !== undefined && body.extend_days > 0) {
+    const base = Math.max(Date.now(), tenant.subscription_expires_at || Date.now());
+    const newExpires = base + body.extend_days * 86400000;
+    updates.push('subscription_expires_at = ?');
+    params.push(newExpires);
+  }
 
   if (updates.length > 0) {
     params.push(tenantId);
@@ -176,12 +210,17 @@ adminRouter.post('/tenants', async (c) => {
     password?: string;
     admin_password?: string;
     plan_id?: string;
+    subscription_days?: number;
+    payment_status?: 'paid' | 'pending' | 'trial';
   }>();
 
   const tenantName = (body.name || body.tenant_name || '').trim();
   const adminEmail = (body.email || body.admin_email || '').trim().toLowerCase();
   const adminPassword = (body.password || body.admin_password || '').trim();
-  const planId = body.plan_id || 'starter';
+  const planId = (body.plan_id || 'starter').toLowerCase();
+  const isTrial = planId === 'trial';
+  const subDays = body.subscription_days || (isTrial ? 7 : 30);
+  const paymentStatus = body.payment_status || (isTrial ? 'trial' : 'paid');
 
   if (!tenantName || !adminEmail || !adminPassword) {
     return c.json({ error: 'Tên doanh nghiệp, email và mật khẩu là bắt buộc' }, 400);
@@ -198,11 +237,12 @@ adminRouter.post('/tenants', async (c) => {
   const tenantId = `tenant_${nanoid(12)}`;
   const userId = `usr_${nanoid(16)}`;
   const now = Date.now();
+  const expiresAt = now + subDays * 86400 * 1000;
 
   await c.env.DB.prepare(
-    'INSERT INTO tenants (id, name, plan_id, status, contact_email, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+    'INSERT INTO tenants (id, name, plan_id, status, contact_email, created_at, subscription_started_at, subscription_expires_at, payment_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
   )
-    .bind(tenantId, tenantName, planId, 'active', adminEmail, now)
+    .bind(tenantId, tenantName, planId, 'active', adminEmail, now, now, expiresAt, paymentStatus)
     .run();
 
   const passwordHash = await hashPassword(adminPassword);
@@ -219,6 +259,8 @@ adminRouter.post('/tenants', async (c) => {
       id: tenantId,
       name: tenantName,
       plan_id: planId,
+      payment_status: paymentStatus,
+      subscription_expires_at: expiresAt,
     },
     user: {
       id: userId,

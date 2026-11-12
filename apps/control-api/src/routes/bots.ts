@@ -45,6 +45,7 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
     name?: string;
     system_prompt?: string;
     strict_grounding?: boolean;
+    rag_scope?: 'bot_only' | 'bot_and_global';
     handover_keywords?: string[];
     handover_minutes?: number;
   }>();
@@ -140,29 +141,52 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
   const botName = body.name?.trim() || resolveBotName(profile);
   const botUsername = profile.username ? String(profile.username).replace(/^@/, '') : null;
   const zaloBotId = String(profile.id || '');
+  const ragScope = body.rag_scope === 'bot_only' ? 'bot_only' : 'bot_and_global';
   const handoverKeywordsJson = body.handover_keywords
     ? JSON.stringify(body.handover_keywords)
     : null;
 
   // 1.5. Persist to D1
   try {
-    await c.env.DB.prepare(
-      `INSERT INTO bots (id, tenant_id, bot_type, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_keywords, handover_minutes, created_at)
-       VALUES (?, ?, 'zalo_bot', ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
-    )
-      .bind(
-        botId,
-        user.tenant_id,
-        botName,
-        zaloBotId,
-        botUsername,
-        body.system_prompt ?? null,
-        body.strict_grounding ? 1 : 0,
-        handoverKeywordsJson,
-        body.handover_minutes ?? 30,
-        now
+    try {
+      await c.env.DB.prepare(
+        `INSERT INTO bots (id, tenant_id, bot_type, name, zalo_bot_id, username, status, system_prompt, strict_grounding, rag_scope, handover_keywords, handover_minutes, created_at)
+         VALUES (?, ?, 'zalo_bot', ?, ?, ?, 'active', ?, ?, ?, ?, ?, ?)`
       )
-      .run();
+        .bind(
+          botId,
+          user.tenant_id,
+          botName,
+          zaloBotId,
+          botUsername,
+          body.system_prompt ?? null,
+          body.strict_grounding ? 1 : 0,
+          ragScope,
+          handoverKeywordsJson,
+          body.handover_minutes ?? 30,
+          now
+        )
+        .run();
+    } catch {
+      // Fallback for legacy schemas without rag_scope
+      await c.env.DB.prepare(
+        `INSERT INTO bots (id, tenant_id, bot_type, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_keywords, handover_minutes, created_at)
+         VALUES (?, ?, 'zalo_bot', ?, ?, ?, 'active', ?, ?, ?, ?, ?)`
+      )
+        .bind(
+          botId,
+          user.tenant_id,
+          botName,
+          zaloBotId,
+          botUsername,
+          body.system_prompt ?? null,
+          body.strict_grounding ? 1 : 0,
+          handoverKeywordsJson,
+          body.handover_minutes ?? 30,
+          now
+        )
+        .run();
+    }
 
     await c.env.DB.prepare(
       `INSERT INTO bot_credentials (bot_id, tenant_id, bot_token_enc, secret_token_enc, created_at)
@@ -199,6 +223,7 @@ botsRouter.post('/connect', requireRole(['tenant_admin', 'platform_owner']), asy
       zalo_bot_id: profile.id,
       username: profile.username,
       status: 'active',
+      rag_scope: ragScope,
       webhook_url: webhookUrl,
       created_at: now,
     },
@@ -210,12 +235,44 @@ botsRouter.get('/', async (c) => {
   const user = c.get('user');
   const tenantId = user.tenant_id;
 
-  const result = await c.env.DB.prepare(
-    `SELECT id, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_minutes, created_at
-     FROM bots WHERE tenant_id = ? ORDER BY created_at DESC`
-  )
-    .bind(tenantId)
-    .all();
+  let result;
+  try {
+    result = await c.env.DB.prepare(
+      `SELECT id, name, zalo_bot_id, username, status, system_prompt, strict_grounding, rag_scope, handover_minutes, created_at
+       FROM bots WHERE tenant_id = ? ORDER BY created_at DESC`
+    )
+      .bind(tenantId)
+      .all();
+  } catch {
+    result = await c.env.DB.prepare(
+      `SELECT id, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_minutes, created_at
+       FROM bots WHERE tenant_id = ? ORDER BY created_at DESC`
+    )
+      .bind(tenantId)
+      .all();
+  }
+
+  // Count RAG documents per bot and global docs so admin UI shows isolation status clearly
+  const docCountMap = new Map<string, number>();
+  let globalDocCount = 0;
+  try {
+    const docRows = await c.env.DB.prepare(
+      `SELECT COALESCE(bot_id, '__global__') as scope_key, COUNT(*) as cnt
+       FROM documents
+       WHERE tenant_id = ?
+       GROUP BY COALESCE(bot_id, '__global__')`
+    )
+      .bind(tenantId)
+      .all<{ scope_key: string; cnt: number }>();
+
+    for (const row of docRows.results || []) {
+      if (row.scope_key === '__global__' || row.scope_key === '' || row.scope_key === 'all') {
+        globalDocCount += Number(row.cnt || 0);
+      } else {
+        docCountMap.set(row.scope_key, Number(row.cnt || 0));
+      }
+    }
+  } catch {}
 
   let webhookBase = c.env.WEBHOOK_BASE_URL;
   const hostHeader = c.req.header('x-forwarded-host') || c.req.header('host');
@@ -227,6 +284,9 @@ botsRouter.get('/', async (c) => {
 
   const botsWithWebhook = (result.results || []).map((bot: any) => ({
     ...bot,
+    rag_scope: bot.rag_scope || 'bot_and_global',
+    dedicated_doc_count: docCountMap.get(bot.id) ?? 0,
+    global_doc_count: globalDocCount,
     webhook_url: `${cleanBase}/${bot.id}`,
   }));
 
@@ -238,12 +298,22 @@ botsRouter.get('/:id', async (c) => {
   const user = c.get('user');
   const botId = c.req.param('id');
 
-  const bot = await c.env.DB.prepare(
-    `SELECT id, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_keywords, handover_minutes, created_at
-     FROM bots WHERE id = ? AND tenant_id = ?`
-  )
-    .bind(botId, user.tenant_id)
-    .first();
+  let bot: any;
+  try {
+    bot = await c.env.DB.prepare(
+      `SELECT id, name, zalo_bot_id, username, status, system_prompt, strict_grounding, rag_scope, handover_keywords, handover_minutes, created_at
+       FROM bots WHERE id = ? AND tenant_id = ?`
+    )
+      .bind(botId, user.tenant_id)
+      .first();
+  } catch {
+    bot = await c.env.DB.prepare(
+      `SELECT id, name, zalo_bot_id, username, status, system_prompt, strict_grounding, handover_keywords, handover_minutes, created_at
+       FROM bots WHERE id = ? AND tenant_id = ?`
+    )
+      .bind(botId, user.tenant_id)
+      .first();
+  }
 
   if (!bot) {
     return c.json({ error: 'Bot not found' }, 404);
@@ -260,6 +330,7 @@ botsRouter.get('/:id', async (c) => {
   return c.json({
     bot: {
       ...bot,
+      rag_scope: bot.rag_scope || 'bot_and_global',
       webhook_url: `${cleanBase}/${botId}`,
     },
   });
@@ -419,6 +490,7 @@ botsRouter.patch('/:id', requireRole(['tenant_admin', 'platform_owner']), async 
     name?: string;
     system_prompt?: string;
     strict_grounding?: boolean;
+    rag_scope?: 'bot_only' | 'bot_and_global';
     handover_keywords?: string[];
     handover_minutes?: number;
   }>();
@@ -445,6 +517,10 @@ botsRouter.patch('/:id', requireRole(['tenant_admin', 'platform_owner']), async 
   if (body.strict_grounding !== undefined) {
     updates.push('strict_grounding = ?');
     params.push(body.strict_grounding ? 1 : 0);
+  }
+  if (body.rag_scope !== undefined) {
+    updates.push('rag_scope = ?');
+    params.push(body.rag_scope === 'bot_only' ? 'bot_only' : 'bot_and_global');
   }
   if (body.handover_keywords !== undefined) {
     updates.push('handover_keywords = ?');

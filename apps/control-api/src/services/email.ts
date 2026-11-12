@@ -96,7 +96,85 @@ export async function getSystemSettings(db: D1Database): Promise<{
 }
 
 /**
- * Pure TLS SMTP sender using standard Node.js node:tls socket
+ * Encode non-ASCII header text as RFC 2047 UTF-8 Base64 encoded-word
+ */
+export function encodeMimeWord(text: string): string {
+  const clean = text.trim();
+  if (!clean) return '';
+  if (/^[\x20-\x7E]+$/.test(clean)) {
+    return clean.includes('"') ? `"${clean.replace(/"/g, '\\"')}"` : `"${clean}"`;
+  }
+  return `=?UTF-8?B?${Buffer.from(clean, 'utf-8').toString('base64')}?=`;
+}
+
+/**
+ * Wrap Base64 body at 76 chars per line (RFC 2045) to satisfy SMTP 998-char line limit
+ */
+export function wrapBase64Lines(base64: string, width = 76): string {
+  const chunks: string[] = [];
+  for (let i = 0; i < base64.length; i += width) {
+    chunks.push(base64.slice(i, i + width));
+  }
+  return chunks.join('\r\n');
+}
+
+/**
+ * Normalize Gmail App Password / SMTP password (removes spaces copied from Google security page)
+ */
+export function normalizeSmtpPassword(pass: string): string {
+  return (pass || '').replace(/\s+/g, '').trim();
+}
+
+/**
+ * Build RFC 5322 / RFC 2045 MIME message payload for SMTP DATA command
+ */
+export function buildSmtpMimePayload(options: {
+  from: string;
+  fromName: string;
+  to: string;
+  subject: string;
+  html: string;
+}): string {
+  const encodedFromName = encodeMimeWord(options.fromName);
+  const encodedSubject = `=?UTF-8?B?${Buffer.from(options.subject, 'utf-8').toString('base64')}?=`;
+  const domain = options.from.includes('@') ? options.from.split('@')[1] : 'zalo-baas.local';
+  const messageId = `<${nanoid(16)}.${Date.now()}@${domain}>`;
+  const bodyBase64 = wrapBase64Lines(Buffer.from(options.html, 'utf-8').toString('base64'));
+
+  return [
+    `From: ${encodedFromName ? `${encodedFromName} <${options.from}>` : `<${options.from}>`}`,
+    `To: <${options.to}>`,
+    `Subject: ${encodedSubject}`,
+    `Message-ID: ${messageId}`,
+    `Date: ${new Date().toUTCString()}`,
+    `MIME-Version: 1.0`,
+    `Content-Type: text/html; charset=UTF-8`,
+    `Content-Transfer-Encoding: base64`,
+    ``,
+    bodyBase64,
+    `.`,
+    ``,
+  ].join('\r\n');
+}
+
+/**
+ * Map cryptic SMTP errors to actionable Vietnamese troubleshooting hints
+ */
+function formatSmtpError(code: number, rawLine: string): string {
+  const lower = rawLine.toLowerCase();
+  if (code === 535 || lower.includes('username and password not accepted') || lower.includes('badcredentials')) {
+    return `Xác thực Gmail/SMTP thất bại (535): Sai email hoặc Mật khẩu ứng dụng (App Password). Lưu ý phải bật Xác minh 2 bước và dùng App Password 16 ký tự từ Google Account (${rawLine}).`;
+  }
+  if (code === 534 || lower.includes('application-specific password')) {
+    return `Tài khoản Google yêu cầu Mật khẩu ứng dụng (App Password 16 ký tự) thay cho mật khẩu thường (${rawLine}).`;
+  }
+  return `SMTP error ${code}: ${rawLine}`;
+}
+
+/**
+ * Pure TLS / STARTTLS SMTP sender using standard Node.js node:tls and node:net sockets.
+ * Handles multi-line SMTP responses (e.g. 250- vs 250 ), RFC 2047 UTF-8 From header,
+ * 76-char Base64 body line wrapping, port 465 (implicit TLS), and port 587 (STARTTLS).
  */
 async function sendViaSmtpTls(options: {
   host: string;
@@ -109,99 +187,175 @@ async function sendViaSmtpTls(options: {
   subject: string;
   html: string;
 }): Promise<{ ok: boolean; error?: string }> {
+  const cleanUser = (options.user || options.from || '').trim();
+  const cleanPass = normalizeSmtpPassword(options.pass);
+  const cleanFrom = (options.from || cleanUser).trim();
+  const cleanTo = (options.to || '').trim();
+  const host = (options.host || 'smtp.gmail.com').trim();
+  const port = Number(options.port) || 465;
+
+  if (!cleanPass) {
+    return { ok: false, error: 'Chưa nhập Mật khẩu ứng dụng Gmail (SMTP Password).' };
+  }
+
   try {
-    // Dynamic import to prevent cloudflare worker type issues during bundle
+    // Dynamic import to prevent Cloudflare Worker bundler issues when unused
     const tlsModule = await (Function('return import("node:tls")')() as Promise<any>);
+    const netModule = await (Function('return import("node:net")')() as Promise<any>);
     if (!tlsModule || typeof tlsModule.connect !== 'function') {
-      return { ok: false, error: 'TLS module unavailable in current environment' };
+      return { ok: false, error: 'Môi trường hiện tại không hỗ trợ node:tls để kết nối SMTP.' };
     }
 
-    return new Promise((resolve) => {
-      const socket = tlsModule.connect(
-        {
-          host: options.host,
-          port: options.port,
-          rejectUnauthorized: false,
-        },
-        () => {
-          let step = 0;
-          let buffer = '';
+    const useStartTls = port === 587 || port === 25 || port === 2525;
 
-          socket.on('data', (data: Buffer) => {
-            buffer += data.toString('utf-8');
-            const lines = buffer.split('\r\n');
-            buffer = lines.pop() || '';
+    return await new Promise((resolve) => {
+      let settled = false;
+      const done = (result: { ok: boolean; error?: string }) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutHandle);
+        resolve(result);
+      };
 
-            for (const line of lines) {
-              const code = parseInt(line.slice(0, 3), 10);
-              if (isNaN(code)) continue;
+      const timeoutHandle = setTimeout(() => {
+        try {
+          activeSocket?.destroy();
+        } catch {}
+        done({
+          ok: false,
+          error: `Quá thời gian kết nối SMTP (${host}:${port}). Vui lòng kiểm tra tường lửa/mạng hoặc thử đổi cổng 465 / 587.`,
+        });
+      }, 15000);
 
-              if (step === 0 && code === 220) {
-                // Initial greeting received, send EHLO
-                step = 1;
-                socket.write(`EHLO localhost\r\n`);
-              } else if (step === 1 && code === 250) {
-                // EHLO acknowledged, send AUTH LOGIN
-                step = 2;
-                socket.write(`AUTH LOGIN\r\n`);
-              } else if (step === 2 && code === 334) {
-                // Username prompt (base64)
-                step = 3;
-                socket.write(`${Buffer.from(options.user).toString('base64')}\r\n`);
-              } else if (step === 3 && code === 334) {
-                // Password prompt (base64)
-                step = 4;
-                socket.write(`${Buffer.from(options.pass).toString('base64')}\r\n`);
-              } else if (step === 4 && code === 235) {
-                // Authentication successful, send MAIL FROM
-                step = 5;
-                socket.write(`MAIL FROM:<${options.from}>\r\n`);
-              } else if (step === 5 && code === 250) {
-                // MAIL FROM accepted, send RCPT TO
-                step = 6;
-                socket.write(`RCPT TO:<${options.to}>\r\n`);
-              } else if (step === 6 && code === 250) {
-                // RCPT TO accepted, send DATA
-                step = 7;
-                socket.write(`DATA\r\n`);
-              } else if (step === 7 && code === 354) {
-                // DATA prompt, send headers and content
-                step = 8;
-                const encodedSubject = `=?UTF-8?B?${Buffer.from(options.subject).toString('base64')}?=`;
-                const emailData = [
-                  `From: "${options.fromName}" <${options.from}>`,
-                  `To: <${options.to}>`,
-                  `Subject: ${encodedSubject}`,
-                  `MIME-Version: 1.0`,
-                  `Content-Type: text/html; charset=UTF-8`,
-                  `Content-Transfer-Encoding: base64`,
-                  `Date: ${new Date().toUTCString()}`,
-                  ``,
-                  Buffer.from(options.html, 'utf-8').toString('base64'),
-                  `.`,
-                  ``,
-                ].join('\r\n');
-                socket.write(emailData);
-              } else if (step === 8 && code === 250) {
-                // Message queued for delivery!
-                step = 9;
-                socket.write(`QUIT\r\n`);
-                socket.end();
-                resolve({ ok: true });
-                return;
-              } else if (code >= 400) {
-                socket.end();
-                resolve({ ok: false, error: `SMTP error ${code}: ${line}` });
-                return;
-              }
+      let step = 0;
+      let startTlsUpgraded = !useStartTls;
+      let buffer = '';
+      let activeSocket: any = null;
+
+      const attachSocketHandlers = (sock: any) => {
+        activeSocket = sock;
+        sock.on('data', (data: Buffer) => {
+          buffer += data.toString('utf-8');
+          const lines = buffer.split(/\r?\n/);
+          buffer = lines.pop() || '';
+
+          for (const rawLine of lines) {
+            if (!rawLine) continue;
+            const code = parseInt(rawLine.slice(0, 3), 10);
+            if (isNaN(code)) continue;
+
+            // Multi-line SMTP continuation lines have '-' at index 3 (e.g. "250-SIZE ..."); wait for final line ("250 ")
+            const isContinuation = rawLine.length >= 4 && rawLine[3] === '-';
+            if (code >= 400) {
+              try {
+                sock.end();
+              } catch {}
+              done({ ok: false, error: formatSmtpError(code, rawLine) });
+              return;
             }
-          });
+            if (isContinuation) {
+              continue;
+            }
 
-          socket.on('error', (err: any) => {
-            resolve({ ok: false, error: err?.message || 'SMTP Socket error' });
+            if (step === 0 && code === 220) {
+              step = 1;
+              sock.write(`EHLO localhost\r\n`);
+            } else if (step === 1 && code === 250) {
+              if (!startTlsUpgraded) {
+                step = 10;
+                sock.write(`STARTTLS\r\n`);
+              } else {
+                step = 2;
+                sock.write(`AUTH LOGIN\r\n`);
+              }
+            } else if (step === 10 && code === 220) {
+              startTlsUpgraded = true;
+              buffer = '';
+              sock.removeAllListeners('data');
+              sock.removeAllListeners('error');
+              sock.removeAllListeners('close');
+              const tlsSock = tlsModule.connect({
+                socket: sock,
+                servername: host,
+                rejectUnauthorized: false,
+              });
+              attachSocketHandlers(tlsSock);
+              step = 11;
+              tlsSock.write(`EHLO localhost\r\n`);
+              return;
+            } else if (step === 11 && code === 250) {
+              step = 2;
+              sock.write(`AUTH LOGIN\r\n`);
+            } else if (step === 2 && code === 334) {
+              step = 3;
+              sock.write(`${Buffer.from(cleanUser, 'utf-8').toString('base64')}\r\n`);
+            } else if (step === 3 && code === 334) {
+              step = 4;
+              sock.write(`${Buffer.from(cleanPass, 'utf-8').toString('base64')}\r\n`);
+            } else if (step === 4 && code === 235) {
+              step = 5;
+              sock.write(`MAIL FROM:<${cleanFrom}>\r\n`);
+            } else if (step === 5 && code === 250) {
+              step = 6;
+              sock.write(`RCPT TO:<${cleanTo}>\r\n`);
+            } else if (step === 6 && code === 250) {
+              step = 7;
+              sock.write(`DATA\r\n`);
+            } else if (step === 7 && code === 354) {
+              step = 8;
+              const payload = buildSmtpMimePayload({
+                from: cleanFrom,
+                fromName: options.fromName || 'Zalo BaaS',
+                to: cleanTo,
+                subject: options.subject,
+                html: options.html,
+              });
+              sock.write(payload);
+            } else if (step === 8 && code === 250) {
+              step = 9;
+              try {
+                sock.write(`QUIT\r\n`);
+                sock.end();
+              } catch {}
+              done({ ok: true });
+              return;
+            }
+          }
+        });
+
+        sock.on('error', (err: any) => {
+          done({
+            ok: false,
+            error: `Lỗi kết nối SMTP (${host}:${port}): ${err?.message || 'SMTP Socket error'}`,
           });
+        });
+
+        sock.on('close', () => {
+          if (!settled && step !== 9) {
+            done({
+              ok: false,
+              error: `Máy chủ SMTP (${host}:${port}) đã đóng kết nối đột ngột ở bước ${step}. Vui lòng kiểm tra cổng 465/587 và App Password.`,
+            });
+          }
+        });
+      };
+
+      if (useStartTls) {
+        if (!netModule || typeof netModule.connect !== 'function') {
+          done({ ok: false, error: 'Không thể khởi tạo node:net cho cổng STARTTLS (587).' });
+          return;
         }
-      );
+        const netSocket = netModule.connect({ host, port });
+        attachSocketHandlers(netSocket);
+      } else {
+        const tlsSocket = tlsModule.connect({
+          host,
+          port,
+          servername: host,
+          rejectUnauthorized: false,
+        });
+        attachSocketHandlers(tlsSocket);
+      }
     });
   } catch (err: any) {
     return { ok: false, error: err?.message || 'Unknown SMTP exception' };

@@ -113,6 +113,13 @@ function initDatabase() {
         console.log('[Zalo-BaaS] Added raw_content column to documents table');
       }
 
+      // Ensure bots table has rag_scope column ('bot_only' | 'bot_and_global')
+      const botCols = db.prepare('PRAGMA table_info(bots)').all().map((c) => c.name);
+      if (!botCols.includes('rag_scope')) {
+        db.exec("ALTER TABLE bots ADD COLUMN rag_scope TEXT NOT NULL DEFAULT 'bot_and_global';");
+        console.log('[Zalo-BaaS] Added rag_scope column to bots table');
+      }
+
       // Ensure tenants table has subscription_started_at, subscription_expires_at and payment_status columns
       const tenantCols = db.prepare('PRAGMA table_info(tenants)').all().map((c) => c.name);
       if (!tenantCols.includes('subscription_started_at')) {

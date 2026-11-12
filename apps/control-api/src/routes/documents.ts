@@ -146,6 +146,7 @@ async function ingestDocument(opts: IngestOptions) {
 documentsRouter.get('/documents', async (c) => {
   const user = c.get('user');
   const botId = c.req.query('bot_id');
+  const strict = c.req.query('strict') === '1' || c.req.query('strict') === 'true';
 
   let query = `
     SELECT d.id, d.bot_id, b.name as bot_name, d.title, d.source_type, d.size_bytes, d.status, d.chunk_count, d.error, d.created_at
@@ -156,14 +157,19 @@ documentsRouter.get('/documents', async (c) => {
   const params: unknown[] = [user.tenant_id];
 
   if (botId === 'all' || botId === 'global') {
-    query += ' AND d.bot_id IS NULL';
+    query += " AND (d.bot_id IS NULL OR d.bot_id = '' OR d.bot_id = 'all')";
   } else if (botId) {
-    // When a specific bot is chosen, show both its dedicated docs AND the tenant global docs
-    query += ' AND (d.bot_id = ? OR d.bot_id IS NULL)';
+    if (strict) {
+      // Strictly show only dedicated docs assigned to this bot
+      query += ' AND d.bot_id = ?';
+    } else {
+      // Show dedicated docs AND global docs (with bot-specific sorted first)
+      query += " AND (d.bot_id = ? OR d.bot_id IS NULL OR d.bot_id = '' OR d.bot_id = 'all')";
+    }
     params.push(botId);
   }
 
-  query += ' ORDER BY d.created_at DESC';
+  query += ' ORDER BY CASE WHEN d.bot_id IS NOT NULL THEN 0 ELSE 1 END, d.created_at DESC';
 
   const docs = await c.env.DB.prepare(query).bind(...params).all();
   return c.json({ documents: docs.results || [] });

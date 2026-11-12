@@ -258,7 +258,15 @@ export default function AdminPage() {
       const payload: any = {};
       if (type === 'website') payload.website_contact = contactForm;
       if (type === 'bank') payload.bank_account = bankForm;
-      if (type === 'email') payload.email_config = emailForm;
+      if (type === 'email') {
+        const cleanSender = emailForm.sender_email.trim();
+        payload.email_config = {
+          ...emailForm,
+          sender_email: cleanSender,
+          smtp_user: emailForm.smtp_user?.trim() || cleanSender,
+          smtp_pass: emailForm.smtp_pass.replace(/\s+/g, '').trim(),
+        };
+      }
 
       await fetchApi('/v1/admin/settings', {
         method: 'PUT',
@@ -291,19 +299,18 @@ export default function AdminPage() {
     setTestMessage(null);
 
     try {
-      const res = await fetchApi<{ ok: boolean; message: string; result: any }>('/v1/admin/send-test-email', {
+      const res = await fetchApi<{ ok: boolean; message: string; error?: string; result: any }>('/v1/admin/send-test-email', {
         method: 'POST',
         body: JSON.stringify({ to_email: testEmailAddress.trim() }),
       });
 
+      const isFailed = !res.ok || res.result?.status === 'failed';
       setTestMessage({
-        text: res.message || 'Đã gửi email thử nghiệm thành công!',
-        success: true,
+        text: isFailed
+          ? res.error || res.result?.error || res.message || 'Gửi email thử nghiệm thất bại'
+          : res.message || 'Đã gửi email thử nghiệm thành công!',
+        success: !isFailed,
       });
-
-      // Reload email logs
-      const logsRes = await fetchApi<{ ok: boolean; logs: EmailLogItem[] }>('/v1/admin/email-logs');
-      if (logsRes?.logs) setEmailLogs(logsRes.logs);
     } catch (err: unknown) {
       setTestMessage({
         text: err instanceof Error ? err.message : 'Lỗi gửi email thử nghiệm',
@@ -311,6 +318,10 @@ export default function AdminPage() {
       });
     } finally {
       setSendingTest(false);
+      try {
+        const logsRes = await fetchApi<{ ok: boolean; logs: EmailLogItem[] }>('/v1/admin/email-logs');
+        if (logsRes?.logs) setEmailLogs(logsRes.logs);
+      } catch {}
     }
   };
 
@@ -1022,7 +1033,10 @@ export default function AdminPage() {
                   <input
                     type="email"
                     value={emailForm.sender_email}
-                    onChange={(e) => setEmailForm({ ...emailForm, sender_email: e.target.value.trim() })}
+                    onChange={(e) => {
+                      const val = e.target.value.trim();
+                      setEmailForm({ ...emailForm, sender_email: val, smtp_user: val });
+                    }}
                     placeholder="congtykynangmem@gmail.com"
                     className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs font-semibold text-blue-700 focus:border-blue-600 focus:outline-none"
                   />
@@ -1056,15 +1070,16 @@ export default function AdminPage() {
 
                 <div>
                   <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Cổng SMTP (SSL: 465)
+                    Cổng SMTP (SSL: 465 / STARTTLS: 587)
                   </label>
-                  <input
-                    type="number"
+                  <select
                     value={emailForm.smtp_port}
                     onChange={(e) => setEmailForm({ ...emailForm, smtp_port: Number(e.target.value) })}
-                    placeholder="465"
-                    className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs focus:border-blue-600 focus:outline-none"
-                  />
+                    className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs focus:border-blue-600 focus:outline-none bg-white"
+                  >
+                    <option value={465}>465 (SSL / TLS trực tiếp - Khuyên dùng)</option>
+                    <option value={587}>587 (STARTTLS)</option>
+                  </select>
                 </div>
 
                 <div className="sm:col-span-2">
@@ -1074,12 +1089,12 @@ export default function AdminPage() {
                   <input
                     type="password"
                     value={emailForm.smtp_pass}
-                    onChange={(e) => setEmailForm({ ...emailForm, smtp_pass: e.target.value.trim() })}
-                    placeholder="xxxx xxxx xxxx xxxx (Để trống nếu chỉ cần ghi log/mô phỏng)"
+                    onChange={(e) => setEmailForm({ ...emailForm, smtp_pass: e.target.value.replace(/\s+/g, '').trim() })}
+                    placeholder="xxxxxxxxxxxxxxxx (Tự động xóa khoảng trắng khi dán 16 ký tự App Password)"
                     className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs font-mono focus:border-blue-600 focus:outline-none"
                   />
                   <p className="mt-1.5 text-[11px] text-slate-400">
-                    💡 Hướng dẫn: Đăng nhập Gmail <strong>{emailForm.sender_email}</strong> → Quản lý tài khoản Google → Bảo mật → Xác minh 2 bước → Mật khẩu ứng dụng.
+                    💡 Hướng dẫn: Đăng nhập Gmail <strong>{emailForm.sender_email}</strong> → Quản lý tài khoản Google → Bảo mật → Xác minh 2 bước → Mật khẩu ứng dụng (tạo mật khẩu 16 ký tự và dán vào ô trên, sau đó bấm <strong>Lưu cấu hình Email</strong> trước khi gửi thử).
                   </p>
                 </div>
               </div>
@@ -1200,9 +1215,16 @@ export default function AdminPage() {
                               <Eye className="h-3 w-3" /> Đã ghi nhận
                             </span>
                           ) : (
-                            <span className="inline-flex items-center gap-1 text-red-700 bg-red-50 px-2 py-0.5 rounded-full text-[10px] font-bold border border-red-200">
-                              Lỗi gửi
-                            </span>
+                            <div className="space-y-1">
+                              <span className="inline-flex items-center gap-1 text-red-700 bg-red-50 px-2 py-0.5 rounded-full text-[10px] font-bold border border-red-200">
+                                Lỗi gửi
+                              </span>
+                              {log.error && (
+                                <p className="text-[10px] text-red-600 max-w-[240px] break-words" title={log.error}>
+                                  {log.error}
+                                </p>
+                              )}
+                            </div>
                           )}
                         </td>
                         <td className="py-3.5 px-5 text-right">

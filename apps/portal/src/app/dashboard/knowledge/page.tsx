@@ -49,7 +49,7 @@ export default function KnowledgePage() {
 
   // Upload modal state
   const [showModal, setShowModal] = useState(false);
-  const [scope, setScope] = useState<'all' | 'bot'>('all');
+  const [scope, setScope] = useState<'all' | 'bot'>('bot');
   const [targetBotId, setTargetBotId] = useState<string>('');
   const [title, setTitle] = useState('');
   const [content, setContent] = useState('');
@@ -133,14 +133,28 @@ export default function KnowledgePage() {
     }
   };
 
-  // 1. Load list of bots
+  // 1. Load list of bots and honor optional ?bot_id= query param
   useEffect(() => {
     async function loadBots() {
       try {
         const res = await fetchApi<{ bots: BotItem[] }>('/v1/bots');
-        setBots(res.bots || []);
-        if (res.bots && res.bots.length > 0) {
-          setTargetBotId(res.bots[0].id);
+        const loadedBots = res.bots || [];
+        setBots(loadedBots);
+
+        const urlBotId =
+          typeof window !== 'undefined'
+            ? new URLSearchParams(window.location.search).get('bot_id')
+            : null;
+
+        if (urlBotId && loadedBots.some((b) => b.id === urlBotId)) {
+          setFilterScope(urlBotId);
+          setScope('bot');
+          setTargetBotId(urlBotId);
+        } else if (loadedBots.length > 0) {
+          setTargetBotId(loadedBots[0].id);
+          setScope('bot');
+        } else {
+          setScope('all');
         }
       } catch (err) {
         console.error('Failed to load bots:', err);
@@ -151,7 +165,7 @@ export default function KnowledgePage() {
     loadBots();
   }, []);
 
-  // 2. Load documents based on selected filter scope
+  // 2. Load documents based on selected filter scope (strict bot filtering when a specific bot is selected)
   const loadDocs = async (filter: string) => {
     setDocsLoading(true);
     try {
@@ -159,7 +173,7 @@ export default function KnowledgePage() {
       if (filter === 'global') {
         endpoint += '?bot_id=global';
       } else if (filter !== 'all') {
-        endpoint += `?bot_id=${filter}`;
+        endpoint += `?bot_id=${filter}&strict=1`;
       }
       const res = await fetchApi<{ documents: DocItem[] }>(endpoint);
       setDocs(res.documents || []);
@@ -394,6 +408,15 @@ export default function KnowledgePage() {
               setTitle('');
               setContent('');
               setAttachedFileName('');
+              if (filterScope !== 'all' && filterScope !== 'global') {
+                setScope('bot');
+                setTargetBotId(filterScope);
+              } else if (bots.length > 0) {
+                setScope('bot');
+                if (!targetBotId) setTargetBotId(bots[0].id);
+              } else {
+                setScope('all');
+              }
             }}
             className="flex items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-700 transition"
           >
@@ -532,12 +555,38 @@ export default function KnowledgePage() {
             )}
 
             <form onSubmit={handleCreateDocument} className="space-y-4">
-              {/* 1. Scope Selection (Linh động phạm vi Tri thức) */}
+              {/* 1. Scope Selection (Ưu tiên gán riêng cho từng Bot để cách ly dữ liệu RAG) */}
               <div>
                 <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-2">
                   Phạm vi áp dụng tài liệu <span className="text-red-500">*</span>
                 </label>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <label
+                    className={`flex items-start gap-3 p-3.5 rounded-xl border text-xs cursor-pointer transition ${
+                      scope === 'bot'
+                        ? 'border-indigo-600 bg-indigo-50/70 text-indigo-950 font-semibold'
+                        : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="scope"
+                      value="bot"
+                      checked={scope === 'bot'}
+                      onChange={() => setScope('bot')}
+                      className="mt-0.5 text-indigo-600"
+                    />
+                    <div>
+                      <div className="flex items-center gap-1 font-bold text-slate-900">
+                        <Bot className="h-3.5 w-3.5 text-indigo-600" />
+                        Áp dụng riêng cho 1 Bot (Khuyên dùng)
+                      </div>
+                      <p className="text-[11px] text-slate-500 font-normal mt-0.5">
+                        Chỉ Zalo Bot được chỉ định mới đọc tài liệu này, tránh lẫn giữa các Bot.
+                      </p>
+                    </div>
+                  </label>
+
                   <label
                     className={`flex items-start gap-3 p-3.5 rounded-xl border text-xs cursor-pointer transition ${
                       scope === 'all'
@@ -556,36 +605,10 @@ export default function KnowledgePage() {
                     <div>
                       <div className="flex items-center gap-1 font-bold text-slate-900">
                         <Globe className="h-3.5 w-3.5 text-blue-600" />
-                        Áp dụng cho MỌI Bot (Khuyên dùng)
+                        Dùng chung (Mọi Bot cùng đọc)
                       </div>
                       <p className="text-[11px] text-slate-500 font-normal mt-0.5">
-                        Tất cả các Zalo Bot của tổ chức đều học và tra cứu được tài liệu này.
-                      </p>
-                    </div>
-                  </label>
-
-                  <label
-                    className={`flex items-start gap-3 p-3.5 rounded-xl border text-xs cursor-pointer transition ${
-                      scope === 'bot'
-                        ? 'border-blue-600 bg-blue-50/60 text-blue-950 font-semibold'
-                        : 'border-slate-200 hover:bg-slate-50 text-slate-700'
-                    }`}
-                  >
-                    <input
-                      type="radio"
-                      name="scope"
-                      value="bot"
-                      checked={scope === 'bot'}
-                      onChange={() => setScope('bot')}
-                      className="mt-0.5 text-blue-600"
-                    />
-                    <div>
-                      <div className="flex items-center gap-1 font-bold text-slate-900">
-                        <Bot className="h-3.5 w-3.5 text-indigo-600" />
-                        Áp dụng riêng cho 1 Bot
-                      </div>
-                      <p className="text-[11px] text-slate-500 font-normal mt-0.5">
-                        Chỉ Zalo Bot được chỉ định mới sử dụng tri thức này.
+                        Chỉ dùng cho quy định chung áp dụng cho tất cả Bot không bật chế độ tách riêng.
                       </p>
                     </div>
                   </label>

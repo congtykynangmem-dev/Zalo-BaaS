@@ -309,10 +309,19 @@ adminRouter.put('/settings', async (c) => {
   }
 
   if (body.email_config) {
+    const cleanSender = (body.email_config.sender_email || 'congtykynangmem@gmail.com').trim();
+    const normalizedEmailConfig = {
+      ...body.email_config,
+      sender_email: cleanSender,
+      smtp_host: (body.email_config.smtp_host || 'smtp.gmail.com').trim(),
+      smtp_port: Number(body.email_config.smtp_port) || 465,
+      smtp_user: (body.email_config.smtp_user || '').trim() || cleanSender,
+      smtp_pass: String(body.email_config.smtp_pass || '').replace(/\s+/g, '').trim(),
+    };
     await c.env.DB.prepare(
       'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
     )
-      .bind('email_config', JSON.stringify(body.email_config), now)
+      .bind('email_config', JSON.stringify(normalizedEmailConfig), now)
       .run();
   }
 
@@ -375,9 +384,26 @@ adminRouter.post('/send-test-email', async (c) => {
     invoiceId: `test_${nanoid(10)}`,
   });
 
+  if (res.status === 'failed' || !res.ok) {
+    return c.json(
+      {
+        ok: false,
+        error: res.error || 'Gửi email qua máy chủ SMTP thất bại. Vui lòng kiểm tra cấu hình Gmail & App Password.',
+        message: `Gửi thử nghiệm tới ${toEmail} thất bại: ${res.error || 'Lỗi SMTP'}`,
+        result: res,
+      },
+      400
+    );
+  }
+
+  const statusNote =
+    res.status === 'sent'
+      ? `Đã gửi thành công email thực tế tới ${toEmail} qua SMTP!`
+      : `Đã ghi nhận mẫu email trong lịch sử (Chế độ mô phỏng vì chưa cấu hình Mật khẩu ứng dụng Gmail 16 ký tự).`;
+
   return c.json({
     ok: true,
-    message: `Đã xử lý gửi email thử nghiệm tới ${toEmail}! Trạng thái: ${res.status}`,
+    message: statusNote,
     result: res,
   });
 });

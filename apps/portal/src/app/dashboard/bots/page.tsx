@@ -18,12 +18,40 @@ import {
   RefreshCw,
   SlidersHorizontal,
   AlertCircle,
+  BookOpen,
 } from 'lucide-react';
+import Link from 'next/link';
 
-const DEFAULT_FB_PROMPT = `Tư vấn bán hàng F&B chuyên nghiệp, nhiệt tình, thân thiện.
-- Khi khách hỏi giá hoặc món cụ thể: Chỉ trả lời các món tương tự và báo giá, sau đó gợi ý món ăn kèm/nước uống (upsell).
-- Khi khách hỏi menu toàn quán: Cung cấp danh mục các nhóm món kèm link đặt hàng hoặc hotline.
-- Xưng Em, dùng emoji 🍗, 🌭, 🍟, 🥤, xưng hô lịch sự với khách hàng.`;
+const DEFAULT_BOT_PROMPT = `Trợ lý AI chăm sóc khách hàng chuyên nghiệp, thân thiện và chính xác.
+- Luôn trả lời dựa trên Kho Tri thức riêng được gán cho Bot này, đúng lĩnh vực và thương hiệu của Bot.
+- Khi khách hỏi bảng giá, gói cước hoặc sản phẩm: Báo đúng thông tin, mức giá và quyền lợi có trong tài liệu; không tự ý suy diễn thông tin ngoài tài liệu.
+- Xưng Em, xưng hô lịch sự với khách hàng.`;
+
+const PROMPT_TEMPLATES: Array<{ id: string; label: string; prompt: string }> = [
+  {
+    id: 'cskh',
+    label: 'Mẫu CSKH / SaaS',
+    prompt: `Trợ lý CSKH & Tư vấn dịch vụ chuyên nghiệp, chính xác.
+- Giải đáp tính năng sản phẩm, hướng dẫn sử dụng và báo giá từng gói cước đúng theo tài liệu của Bot.
+- Không nhầm lẫn với sản phẩm của ngành hàng khác.
+- Khi cần hỗ trợ kỹ thuật chuyên sâu hoặc báo giá tùy biến, hướng dẫn khách để lại thông tin hoặc liên hệ bộ phận hỗ trợ.`,
+  },
+  {
+    id: 'fb',
+    label: 'Mẫu F&B / Nhà hàng',
+    prompt: `Tư vấn bán hàng F&B chuyên nghiệp, nhiệt tình, thân thiện.
+- Khi khách hỏi giá hoặc món cụ thể: Chỉ trả lời các món tương tự có trong thực đơn của quán và báo giá chính xác.
+- Khi khách hỏi menu toàn quán: Cung cấp danh mục các nhóm món kèm thông tin đặt hàng có trong tài liệu.
+- Xưng Em, phong cách gần gũi, lịch sự với khách hàng.`,
+  },
+  {
+    id: 'retail',
+    label: 'Mẫu Bán lẻ / Doanh nghiệp',
+    prompt: `Chuyên viên tư vấn bán hàng & hỗ trợ doanh nghiệp.
+- Báo giá, thông số sản phẩm, chính sách bảo hành và giao nhận đúng theo tài liệu sản phẩm của Bot.
+- Trả lời ngắn gọn, rõ ràng bằng gạch đầu dòng.`,
+  },
+];
 
 interface BotItem {
   id: string;
@@ -33,6 +61,9 @@ interface BotItem {
   status: 'active' | 'paused' | 'error';
   system_prompt?: string;
   strict_grounding: number;
+  rag_scope?: 'bot_only' | 'bot_and_global';
+  dedicated_doc_count?: number;
+  global_doc_count?: number;
   created_at: number;
   webhook_url?: string;
 }
@@ -49,8 +80,9 @@ export default function BotsPage() {
   // Wizard state
   const [botToken, setBotToken] = useState('');
   const [customName, setCustomName] = useState('');
-  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_FB_PROMPT);
-  const [strictGrounding, setStrictGrounding] = useState(false);
+  const [systemPrompt, setSystemPrompt] = useState(DEFAULT_BOT_PROMPT);
+  const [strictGrounding, setStrictGrounding] = useState(true);
+  const [ragScope, setRagScope] = useState<'bot_only' | 'bot_and_global'>('bot_only');
   const [submitting, setSubmitting] = useState(false);
   const [wizardError, setWizardError] = useState('');
   const [connectedBot, setConnectedBot] = useState<BotItem | null>(null);
@@ -60,6 +92,7 @@ export default function BotsPage() {
   const [editName, setEditName] = useState('');
   const [editPrompt, setEditPrompt] = useState('');
   const [editStrict, setEditStrict] = useState(false);
+  const [editRagScope, setEditRagScope] = useState<'bot_only' | 'bot_and_global'>('bot_only');
   const [savingBot, setSavingBot] = useState(false);
   const [editError, setEditError] = useState('');
 
@@ -97,6 +130,7 @@ export default function BotsPage() {
           name: customName.trim() || undefined,
           system_prompt: systemPrompt,
           strict_grounding: strictGrounding,
+          rag_scope: ragScope,
         }),
       });
 
@@ -165,8 +199,9 @@ export default function BotsPage() {
   const handleOpenEditModal = (bot: BotItem) => {
     setEditingBot(bot);
     setEditName(bot.name);
-    setEditPrompt(bot.system_prompt || DEFAULT_FB_PROMPT);
+    setEditPrompt(bot.system_prompt || DEFAULT_BOT_PROMPT);
     setEditStrict(Boolean(bot.strict_grounding));
+    setEditRagScope(bot.rag_scope === 'bot_only' ? 'bot_only' : 'bot_and_global');
     setEditError('');
   };
 
@@ -183,6 +218,7 @@ export default function BotsPage() {
           name: editName.trim() || editingBot.name,
           system_prompt: editPrompt.trim(),
           strict_grounding: editStrict,
+          rag_scope: editRagScope,
         }),
       });
       await loadBots();
@@ -289,6 +325,18 @@ export default function BotsPage() {
               {/* Bot Details */}
               <div className="mt-5 space-y-2.5 border-t border-slate-100 pt-4 text-xs">
                 <div className="flex items-center justify-between text-slate-500">
+                  <span>Phạm vi Kho Tri thức:</span>
+                  {bot.rag_scope === 'bot_only' ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-indigo-50 px-2 py-0.5 text-[11px] font-semibold text-indigo-700 border border-indigo-200">
+                      Tách riêng Bot ({bot.dedicated_doc_count ?? 0} tài liệu)
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-slate-100 px-2 py-0.5 text-[11px] font-semibold text-slate-700 border border-slate-200">
+                      Riêng ({bot.dedicated_doc_count ?? 0}) + Chung ({bot.global_doc_count ?? 0})
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center justify-between text-slate-500">
                   <span>Chống ảo giác (Strict):</span>
                   <span className="font-semibold text-slate-700">
                     {bot.strict_grounding ? 'Bật (Chặt chẽ)' : 'Mặc định'}
@@ -299,6 +347,16 @@ export default function BotsPage() {
                   <span className="font-semibold text-slate-700">
                     {new Date(bot.created_at).toLocaleDateString('vi-VN')}
                   </span>
+                </div>
+
+                <div className="pt-1">
+                  <Link
+                    href={`/dashboard/knowledge?bot_id=${bot.id}`}
+                    className="inline-flex items-center gap-1.5 text-[11px] font-semibold text-indigo-600 hover:text-indigo-800 bg-indigo-50/70 hover:bg-indigo-100/70 px-2.5 py-1 rounded-lg border border-indigo-100 transition"
+                  >
+                    <BookOpen className="h-3 w-3" />
+                    Quản lý Kho Tri thức riêng của Bot →
+                  </Link>
                 </div>
 
                 {/* Webhook Address */}
@@ -464,18 +522,23 @@ export default function BotsPage() {
                   </div>
 
                   <div>
-                    <div className="flex items-center justify-between mb-1">
+                    <div className="flex items-center justify-between mb-1 flex-wrap gap-1">
                       <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
                         Chỉ thị phong cách của Bot (System Prompt)
                       </label>
-                      <button
-                        type="button"
-                        onClick={() => setSystemPrompt(DEFAULT_FB_PROMPT)}
-                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded transition"
-                      >
-                        <Sparkles className="h-3 w-3 text-blue-600" />
-                        Mẫu Prompt F&B chuẩn
-                      </button>
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        {PROMPT_TEMPLATES.map((tpl) => (
+                          <button
+                            key={tpl.id}
+                            type="button"
+                            onClick={() => setSystemPrompt(tpl.prompt)}
+                            className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded transition"
+                          >
+                            <Sparkles className="h-3 w-3 text-blue-600" />
+                            {tpl.label}
+                          </button>
+                        ))}
+                      </div>
                     </div>
                     <textarea
                       rows={4}
@@ -484,6 +547,56 @@ export default function BotsPage() {
                       placeholder="Hướng dẫn cách xưng hô, giọng điệu tư vấn, quy tắc báo giá..."
                       className="mt-1 w-full rounded-xl border border-slate-200 px-3.5 py-2 text-xs focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600 font-mono text-[11px]"
                     />
+                  </div>
+
+                  <div>
+                    <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                      Phạm vi Kho Tri thức RAG
+                    </label>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <label
+                        className={`flex items-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
+                          ragScope === 'bot_only'
+                            ? 'border-indigo-600 bg-indigo-50/70 text-indigo-950 font-semibold'
+                            : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="ragScope"
+                          checked={ragScope === 'bot_only'}
+                          onChange={() => setRagScope('bot_only')}
+                          className="mt-0.5 text-indigo-600"
+                        />
+                        <div>
+                          <div className="font-bold">Chỉ tài liệu riêng của Bot (Khuyên dùng)</div>
+                          <div className="text-[11px] text-slate-500 font-normal">
+                            Tách biệt hoàn toàn dữ liệu giữa các Bot.
+                          </div>
+                        </div>
+                      </label>
+                      <label
+                        className={`flex items-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
+                          ragScope === 'bot_and_global'
+                            ? 'border-blue-600 bg-blue-50/70 text-blue-950 font-semibold'
+                            : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                        }`}
+                      >
+                        <input
+                          type="radio"
+                          name="ragScope"
+                          checked={ragScope === 'bot_and_global'}
+                          onChange={() => setRagScope('bot_and_global')}
+                          className="mt-0.5 text-blue-600"
+                        />
+                        <div>
+                          <div className="font-bold">Tài liệu riêng + Dùng chung</div>
+                          <div className="text-[11px] text-slate-500 font-normal">
+                            Đọc cả kho riêng của Bot và tài liệu chung.
+                          </div>
+                        </div>
+                      </label>
+                    </div>
                   </div>
 
                   <div className="flex items-center gap-2 pt-2">
@@ -613,29 +726,84 @@ export default function BotsPage() {
               </div>
 
               <div>
-                <div className="flex items-center justify-between mb-1.5">
+                <div className="flex items-center justify-between mb-1.5 flex-wrap gap-1.5">
                   <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider">
                     Chỉ thị phong cách (System Prompt)
                   </label>
-                  <button
-                    type="button"
-                    onClick={() => setEditPrompt(DEFAULT_FB_PROMPT)}
-                    className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded transition"
-                  >
-                    <Sparkles className="h-3 w-3 text-blue-600" />
-                    Áp dụng mẫu Prompt F&B / Menu chuẩn
-                  </button>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    {PROMPT_TEMPLATES.map((tpl) => (
+                      <button
+                        key={tpl.id}
+                        type="button"
+                        onClick={() => setEditPrompt(tpl.prompt)}
+                        className="text-[11px] font-semibold text-blue-600 hover:text-blue-800 flex items-center gap-1 bg-blue-50 px-2 py-0.5 rounded transition"
+                      >
+                        <Sparkles className="h-3 w-3 text-blue-600" />
+                        {tpl.label}
+                      </button>
+                    ))}
+                  </div>
                 </div>
                 <textarea
                   rows={5}
                   value={editPrompt}
                   onChange={(e) => setEditPrompt(e.target.value)}
-                  placeholder="Nhập hướng dẫn cách thức trả lời, quy tắc tư vấn món..."
+                  placeholder="Nhập hướng dẫn cách thức trả lời, quy tắc tư vấn riêng cho Bot này..."
                   className="w-full rounded-xl border border-slate-200 p-3 text-xs focus:border-blue-600 focus:outline-none focus:ring-1 focus:ring-blue-600 font-mono leading-relaxed"
                 />
                 <p className="mt-1 text-[11px] text-slate-400 leading-normal">
-                  💡 Mẹo: Bot đã tích hợp sẵn quy tắc chỉ báo đúng món khách hỏi và chỉ gửi toàn bộ Menu khi khách yêu cầu. Bạn có thể bổ sung thêm lời chào hoặc hotline riêng của quán tại đây.
+                  💡 Mẹo: Mỗi Bot nên có System Prompt và Kho Tri thức RAG riêng để không lẫn thông tin giữa các lĩnh vực/chi nhánh khác nhau.
                 </p>
+              </div>
+
+              <div>
+                <label className="block text-xs font-bold text-slate-700 uppercase tracking-wider mb-1.5">
+                  Phạm vi Kho Tri thức RAG của Bot này
+                </label>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  <label
+                    className={`flex items-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
+                      editRagScope === 'bot_only'
+                        ? 'border-indigo-600 bg-indigo-50/70 text-indigo-950 font-semibold'
+                        : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="editRagScope"
+                      checked={editRagScope === 'bot_only'}
+                      onChange={() => setEditRagScope('bot_only')}
+                      className="mt-0.5 text-indigo-600"
+                    />
+                    <div>
+                      <div className="font-bold">Chỉ tài liệu riêng của Bot</div>
+                      <div className="text-[11px] text-slate-500 font-normal">
+                        Cách ly hoàn toàn với tài liệu chung & Bot khác.
+                      </div>
+                    </div>
+                  </label>
+                  <label
+                    className={`flex items-start gap-2 p-2.5 rounded-xl border text-xs cursor-pointer transition ${
+                      editRagScope === 'bot_and_global'
+                        ? 'border-blue-600 bg-blue-50/70 text-blue-950 font-semibold'
+                        : 'border-slate-200 hover:bg-slate-50 text-slate-700'
+                    }`}
+                  >
+                    <input
+                      type="radio"
+                      name="editRagScope"
+                      checked={editRagScope === 'bot_and_global'}
+                      onChange={() => setEditRagScope('bot_and_global')}
+                      className="mt-0.5 text-blue-600"
+                    />
+                    <div>
+                      <div className="font-bold">Tài liệu riêng + Dùng chung</div>
+                      <div className="text-[11px] text-slate-500 font-normal">
+                        Đọc cả tài liệu riêng và kho Dùng chung.
+                      </div>
+                    </div>
+                  </label>
+                </div>
               </div>
 
               <div className="flex items-center gap-2 pt-2">

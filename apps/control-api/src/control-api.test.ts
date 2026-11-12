@@ -656,13 +656,11 @@ describe('Control API Worker (apps/control-api)', () => {
     expect(sausageReply).toContain('Xúc xích Torpedo');
     expect(sausageReply).toContain('Xúc xích Sumo');
 
-    // Should NOT include unrelated items
+    // Should NOT include unrelated items or fabricate unconfigured upsells
     expect(sausageReply).not.toContain('Cá viên');
     expect(sausageReply).not.toContain('Bò viên');
     expect(sausageReply).not.toContain('Khoai tây lắc');
-
-    // Should include upsell suggestion
-    expect(sausageReply).toContain('Gợi ý thêm');
+    expect(sausageReply).not.toContain('Xốt phô mai');
 
     // 1.1 Customer asks "giá gà của cửa hàng?" (Fuzzy keyword match across all chicken products)
     const chickenGeneralReply = formatSmartKnowledgeReply(
@@ -712,7 +710,7 @@ describe('Control API Worker (apps/control-api)', () => {
     expect(menuReply).toContain('Thực đơn đầy đủ');
     expect(menuReply).toContain('Cá viên');
     expect(menuReply).toContain('Xúc xích Phô mai');
-    expect(menuReply).toContain('Đặt hàng giao tận nơi');
+    expect(menuReply).not.toContain('0986.000.797');
 
     // 3. Customer only asks about opening hours (Must NOT leak brand positioning or full menu)
     const rawDocumentWithInternalNotes = `
@@ -977,5 +975,109 @@ KHO TRI THỨC & QUY TẮC VẬN HÀNH: GÀ RÁN FIVE STAR - 41 TRẦN PHÚ
     expect(trialData.ok).toBe(true);
     expect(trialData.trial_activated).toBe(true);
     expect(trialData.plan_id).toBe('trial');
+  });
+
+  it('keeps non-F&B bots (Zalo BaaS SaaS) strictly domain-isolated without restaurant leakage', async () => {
+    const { formatSmartKnowledgeReply } = await import('./routes/webhook.js');
+    const { buildSystemInstruction } = await import('@zalo-baas/llm');
+
+    const saasDoc = `
+# Tài liệu Chăm sóc Khách hàng Zalo BaaS
+
+## 1. Tính năng nổi bật của Zalo BaaS
+- Kết nối Zalo Bot nhanh trong 10 giây qua Webhook.
+- Kho tri thức RAG tách riêng cho từng Bot, chống ảo giác Strictly Grounded.
+- Hộp thư hội thoại Live Chat & chuyển giao nhân viên CSKH tự động.
+
+## 2. Bảng giá gói cước Zalo BaaS
+| Gói cước | Giá bán | Đơn vị | Ghi chú |
+| Dùng thử | 0đ | 7 ngày | Tối đa 1 Bot, 1.000 tin nhắn AI |
+| Gói Starter | 99.000đ | tháng | Tối đa 1 Zalo Bot, 3.000 tin nhắn AI |
+| Gói Pro | 299.000đ | tháng | Tối đa 3 Zalo Bot, 15.000 tin nhắn AI |
+| Gói Enterprise | 499.000đ | tháng | Tối đa 5 Zalo Bot, 50.000 tin nhắn AI |
+`;
+
+    // Query 1: Ask about features
+    const featureReply = formatSmartKnowledgeReply(
+      'giới thiệu tính năng?',
+      saasDoc,
+      'Zalo BaaS - Chăm sóc khách hàng',
+      'Mr Bửu Vĩnh Long'
+    );
+    expect(featureReply).toContain('Zalo BaaS - Chăm sóc khách hàng');
+    expect(featureReply).toContain('Kho tri thức RAG tách riêng cho từng Bot');
+    expect(featureReply).not.toContain('bảng giá của quán');
+    expect(featureReply).not.toContain('0986.000.797');
+    expect(featureReply).not.toContain('🍗');
+
+    // Query 2: Ask about Starter package price
+    const starterReply = formatSmartKnowledgeReply(
+      'giá gói Starter?',
+      saasDoc,
+      'Zalo BaaS - Chăm sóc khách hàng',
+      'Mr Bửu Vĩnh Long'
+    );
+    expect(starterReply).toContain('Gói Starter');
+    expect(starterReply).toContain('99.000đ');
+    expect(starterReply).not.toContain('tại quán');
+    expect(starterReply).not.toContain('Xốt phô mai');
+    expect(starterReply).not.toContain('🍗');
+
+    // Query 3: Ask about an unmentioned item -> clean domain-neutral fallback
+    const missingReply = formatSmartKnowledgeReply(
+      'giá gói VIP Platinum?',
+      saasDoc,
+      'Zalo BaaS - Chăm sóc khách hàng',
+      'Mr Bửu Vĩnh Long'
+    );
+    expect(missingReply).toContain('Zalo BaaS - Chăm sóc khách hàng');
+    expect(missingReply).not.toContain('món "');
+    expect(missingReply).not.toContain('trong bảng giá của quán');
+    expect(missingReply).not.toContain('menu');
+    expect(missingReply).not.toContain('0986.000.797');
+    expect(missingReply).not.toContain('🍗');
+
+    // System prompt must never contain hardcoded fried chicken examples
+    const sysPrompt = buildSystemInstruction({
+      botName: 'Zalo BaaS - Chăm sóc khách hàng',
+      strictGrounding: true,
+    });
+    expect(sysPrompt).toContain('Zalo BaaS - Chăm sóc khách hàng');
+    expect(sysPrompt).not.toContain('Gà giòn');
+    expect(sysPrompt).not.toContain('ShopeeFood');
+    expect(sysPrompt).not.toContain('Xúc xích');
+  });
+
+  it('builds RFC-compliant SMTP MIME payloads and strips Gmail App Password whitespace', async () => {
+    const {
+      encodeMimeWord,
+      wrapBase64Lines,
+      normalizeSmtpPassword,
+      buildSmtpMimePayload,
+    } = await import('./services/email.js');
+
+    expect(normalizeSmtpPassword('abcd efgh ijkl mnop')).toBe('abcdefghijklmnop');
+
+    const encodedFrom = encodeMimeWord('Zalo BaaS - Kỹ Năng Mềm');
+    expect(encodedFrom).toMatch(/^=\?UTF-8\?B\?.+\?=$/);
+
+    const longB64 = 'A'.repeat(200);
+    const wrapped = wrapBase64Lines(longB64, 76);
+    const lines = wrapped.split('\r\n');
+    expect(lines.length).toBe(3);
+    expect(lines[0].length).toBe(76);
+    expect(lines[2].length).toBe(48);
+
+    const payload = buildSmtpMimePayload({
+      from: 'congtykynangmem@gmail.com',
+      fromName: 'Zalo BaaS - Kỹ Năng Mềm',
+      to: 'customer@example.com',
+      subject: 'Xác nhận thanh toán',
+      html: '<p>' + 'Noi dung thanh toan '.repeat(20) + '</p>',
+    });
+    expect(payload).toContain('From: =?UTF-8?B?');
+    expect(payload).toContain('<congtykynangmem@gmail.com>');
+    expect(payload).toContain('To: <customer@example.com>');
+    expect(payload).toContain('\r\n.\r\n');
   });
 });

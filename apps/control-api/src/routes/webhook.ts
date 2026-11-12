@@ -29,59 +29,91 @@ export interface MenuItem {
   raw?: string;
 }
 
-// Parses menu items from markdown tables, bullet lists, or price lines
+// Strip markdown formatting decorators from parsed labels
+function stripMarkdownInline(text: string): string {
+  return text.replace(/\*\*|__|`/g, '').trim();
+}
+
+// Parses pricing/menu items from markdown tables, bullet lists, headings + price lines
 export function parseMenuItems(content: string): MenuItem[] {
   const items: MenuItem[] = [];
   const lines = content.split('\n');
+  let currentHeading = '';
+
+  const genericPriceLabels = new Set([
+    'giá', 'gia', 'giá bán', 'gia ban', 'đơn giá', 'don gia', 'cước phí', 'cuoc phi', 'chi phí', 'chi phi', 'phí', 'phi', 'học phí',
+  ]);
 
   for (const line of lines) {
     const trimmed = line.trim();
     if (!trimmed) continue;
 
-    // 1. Markdown table row: | Tên món | Giá | Đơn vị | Ghi chú |
-    if (trimmed.startsWith('|') && !trimmed.includes('|:--') && !trimmed.includes('| Tên món |') && !trimmed.includes('|---')) {
-      const parts = trimmed.split('|').map((p) => p.trim()).filter(Boolean);
+    // Track current Markdown or numbered heading so multi-line specs (e.g. "### Gói Starter\n- Giá: 99.000đ/tháng") preserve item name
+    const headingMatch = trimmed.match(/^(?:#{1,6}\s+|(?:\d+[.)]\s+))(.+)$/);
+    if (headingMatch && !trimmed.includes(':') && !/\d{1,3}(?:[.,]\d{3})+\s*(?:đ|vnd|vnđ)/i.test(trimmed)) {
+      currentHeading = stripMarkdownInline(headingMatch[1]);
+      continue;
+    }
+
+    // 1. Markdown table row: | Tên món/Gói | Giá | Đơn vị | Ghi chú |
+    if (trimmed.startsWith('|') && !trimmed.includes('|:--') && !trimmed.includes('|---')) {
+      const parts = trimmed.split('|').map((p) => stripMarkdownInline(p)).filter(Boolean);
       if (parts.length >= 2) {
         const name = parts[0];
         const price = parts[1];
-        const unit = parts[2] || 'phần';
-        const note = parts[3] || '';
-        if (/\d+/.test(price)) {
-          items.push({ name, price, unit, note, raw: trimmed });
+        const unit = parts[2] || '';
+        const note = parts.slice(3).join(' · ');
+        const nameLower = name.toLowerCase();
+        const isHeaderRow = nameLower === 'tên món' || nameLower === 'gói cước' || nameLower === 'dịch vụ' || nameLower === 'sản phẩm';
+        if (!isHeaderRow && /\d+/.test(price)) {
+          items.push({ name, price, unit: unit || 'gói/phần', note, raw: trimmed });
           continue;
         }
       }
     }
 
-    // 2. Bullet / List format: - Gà giòn truyền thống: 32.000đ / Miếng (Ghi chú)
-    const listMatch = trimmed.match(
-      /^[-*•\d.]+\s*(.+?)\s*[:–-]\s*([\d.,]+\s*(?:đ|vnd|vnđ|k|nghìn|đồng)?)\s*(?:\/\s*([^\s()]+))?\s*(?:\((.*?)\))?$/i
+    // 2. Bullet / List format: - **Gói Starter**: 99.000 đ / tháng (Ghi chú)
+    const cleanLine = stripMarkdownInline(trimmed);
+    const listMatch = cleanLine.match(
+      /^[-*•\d.]+\s*(.+?)\s*[:–-]\s*([\d.,]+\s*(?:đ|vnd|vnđ|k|nghìn|đồng|0\.?đ|miễn phí)?)\s*(?:\/\s*([^\s()]+))?\s*(?:\((.*?)\))?$/i
     );
-    if (listMatch) {
-      items.push({
-        name: listMatch[1].trim(),
-        price: listMatch[2].trim(),
-        unit: listMatch[3] ? listMatch[3].trim() : 'phần',
-        note: listMatch[4] ? listMatch[4].trim() : '',
-        raw: trimmed,
-      });
-      continue;
+    if (listMatch && /\d/.test(listMatch[2])) {
+      let itemName = listMatch[1].trim();
+      const normLabel = itemName.toLowerCase();
+      if (genericPriceLabels.has(normLabel) && currentHeading) {
+        itemName = currentHeading;
+      }
+      if (!normLabel.includes('giờ mở') && !normLabel.includes('hotline') && !normLabel.includes('điện thoại')) {
+        items.push({
+          name: itemName,
+          price: listMatch[2].trim(),
+          unit: listMatch[3] ? listMatch[3].trim() : 'gói/phần',
+          note: listMatch[4] ? listMatch[4].trim() : '',
+          raw: trimmed,
+        });
+        continue;
+      }
     }
 
-    // 3. General line containing price: e.g. Gà giòn 32.000đ / miếng
-    const priceMatch = trimmed.match(
-      /([^\d:–-]+?)\s*[:–-]?\s*(\d{1,3}(?:[.,]\d{3})*\s*(?:đ|vnd|vnđ|k|đồng))\s*(?:\/\s*([^\s()]+))?\s*(?:\((.*?)\))?/i
+    // 3. General line containing explicit VND price: e.g. Gói Starter 99.000đ / tháng
+    const priceMatch = cleanLine.match(
+      /([^\d:–-]+?)\s*[:–-]?\s*(\d{1,3}(?:[.,]\d{3})+\s*(?:đ|vnd|vnđ|đồng)|\d+\s*(?:k|nghìn|triệu)\b)\s*(?:\/\s*([^\s()]+))?\s*(?:\((.*?)\))?/i
     );
     if (
       priceMatch &&
       priceMatch[1].trim().length >= 2 &&
       !priceMatch[1].toLowerCase().includes('giờ mở') &&
-      !priceMatch[1].toLowerCase().includes('hotline')
+      !priceMatch[1].toLowerCase().includes('hotline') &&
+      !priceMatch[1].toLowerCase().includes('điện thoại')
     ) {
+      let itemName = priceMatch[1].replace(/^[-*•\d.]+\s*/, '').trim();
+      if (genericPriceLabels.has(itemName.toLowerCase()) && currentHeading) {
+        itemName = currentHeading;
+      }
       items.push({
-        name: priceMatch[1].replace(/^[-*•\d.]+\s*/, '').trim(),
+        name: itemName,
         price: priceMatch[2].trim(),
-        unit: priceMatch[3] ? priceMatch[3].trim() : 'phần',
+        unit: priceMatch[3] ? priceMatch[3].trim() : 'gói/phần',
         note: priceMatch[4] ? priceMatch[4].trim() : '',
         raw: trimmed,
       });
@@ -103,9 +135,10 @@ export function extractSearchTerms(query: string) {
     'giá', 'gia', 'bao', 'nhiêu', 'nhieu', 'tiền', 'tien', 'của', 'cua', 'cửa', 'hàng', 'hang',
     'quán', 'quan', 'cho', 'hỏi', 'hoi', 'có', 'co', 'bán', 'ban', 'không', 'khong', 'mình', 'minh',
     'em', 'ơi', 'oi', 'ạ', 'a', 'nhỉ', 'nhi', 'shop', 'với', 'voi', 'ở', 'o', 'đâu', 'dau',
-    'là', 'la', 'mấy', 'may', 'thế', 'the', 'nào', 'nao', 'như', 'nhu', 'được', 'duoc',
+    'là', 'la', 'mấy', 'may', 'thế', 'the', 'nào', 'nao', 'như', 'nhu', 'được', 'duoc', 'giới', 'thiệu',
+    'giới thiệu', 'về', 've', 'tôi', 'toi', 'bạn', 'ban', 'hệ', 'thống', 'gì', 'gi', 'chi', 'tiết',
     'cây', 'que', 'xiên', 'xien', 'phần', 'phan', 'miếng', 'mieng', 'cái', 'cai', 'hộp', 'hop', 'ly', 'cốc', 'coc',
-    'bên', 'ben', 'thì', 'thi', 'loại', 'loai', 'các', 'cac', 'những', 'nhung', 'một', 'mot', 'từng', 'tung'
+    'bên', 'ben', 'thì', 'thi', 'loại', 'loai', 'các', 'cac', 'những', 'nhung', 'một', 'mot', 'từng', 'tung', 'xem'
   ]);
 
   const words = clean.split(' ').filter((w) => w.length > 0 && !stopWords.has(w));
@@ -183,7 +216,94 @@ export function searchMenuItems(query: string, items: MenuItem[]): MenuItem[] {
   return [];
 }
 
-// Helper to extract clean customer-facing information or answer specific queries
+// Searches knowledge base sections (markdown headings & paragraphs) for non-menu / general queries
+function searchKnowledgeSections(query: string, sanitizedContent: string): string[] {
+  const kw = extractSearchTerms(query);
+  // Keep meaningful query words including "giới thiệu", "tính năng", "gói"
+  const rawTokens = query
+    .toLowerCase()
+    .replace(/[?!.,;:()"'`]/g, ' ')
+    .split(/\s+/)
+    .filter((w) => w.length > 1);
+  const searchTokens = Array.from(new Set([...kw.words, ...rawTokens])).filter((w) => w.length > 1);
+  if (searchTokens.length === 0) return [];
+
+  // Split content into sections by markdown headings or numbered headers
+  const lines = sanitizedContent.split('\n');
+  const sections: Array<{ heading: string; body: string }> = [];
+  let currentHeading = '';
+  let currentLines: string[] = [];
+
+  for (const line of lines) {
+    const trimmed = line.trim();
+    const isHeading =
+      /^#{1,6}\s+/.test(trimmed) ||
+      /^\d+\.\s+[A-ZÀ-Ỹa-zà-ỹ]/.test(trimmed) ||
+      (/^[A-ZÀ-Ỹ0-9\s,&\-–/:()]{6,}$/.test(trimmed) && !trimmed.startsWith('|'));
+
+    if (isHeading && currentLines.length > 0) {
+      sections.push({ heading: currentHeading, body: currentLines.join('\n').trim() });
+      currentHeading = trimmed;
+      currentLines = [line];
+    } else {
+      if (isHeading && !currentHeading) currentHeading = trimmed;
+      currentLines.push(line);
+    }
+  }
+  if (currentLines.length > 0) {
+    sections.push({ heading: currentHeading, body: currentLines.join('\n').trim() });
+  }
+
+  const scored = sections
+    .filter((sec) => sec.body.length > 0)
+    .map((sec) => {
+      const lowerBody = sec.body.toLowerCase();
+      const normBody = normalizeVietnamese(sec.body);
+      const lowerHeading = sec.heading.toLowerCase();
+      const normHeading = normalizeVietnamese(sec.heading);
+      let score = 0;
+
+      if (kw.phrase && lowerBody.includes(kw.phrase)) score += 35;
+      if (kw.normPhrase && normBody.includes(kw.normPhrase)) score += 25;
+      if (kw.phrase && lowerHeading.includes(kw.phrase)) score += 45;
+      if (kw.normPhrase && normHeading.includes(kw.normPhrase)) score += 35;
+
+      for (const token of searchTokens) {
+        const nt = normalizeVietnamese(token);
+        if (lowerHeading.includes(token) || (nt && normHeading.includes(nt))) score += 15;
+        else if (lowerBody.includes(token) || (nt && normBody.includes(nt))) score += 5;
+      }
+
+      return { body: sec.body, score };
+    })
+    .filter((s) => s.score >= 10)
+    .sort((a, b) => b.score - a.score);
+
+  return scored.slice(0, 3).map((s) => s.body);
+}
+
+// Helper to extract dynamically any contact/hotline/email line actually present in bot's docs
+function extractContactSnippet(rawContent: string): string {
+  const lines = rawContent.split('\n');
+  const matches: string[] = [];
+  for (const l of lines) {
+    const low = l.toLowerCase();
+    if (
+      low.includes('hotline') ||
+      low.includes('liên hệ') ||
+      low.includes('số điện thoại') ||
+      low.includes('zalo quản lý') ||
+      low.includes('email:') ||
+      /0\d{2,3}[.\s-]?\d{3}[.\s-]?\d{3,4}/.test(l)
+    ) {
+      const cleaned = l.replace(/^[\s*•\-–]+/, '').trim();
+      if (cleaned && !matches.includes(cleaned)) matches.push(cleaned);
+    }
+  }
+  return matches.slice(0, 2).join('\n• ');
+}
+
+// Helper to extract clean customer-facing information or answer specific queries without cross-tenant/cross-bot hardcoding
 export function formatSmartKnowledgeReply(
   query: string,
   rawContent: string,
@@ -191,63 +311,76 @@ export function formatSmartKnowledgeReply(
   displayName: string
 ): string {
   const queryLower = query.toLowerCase();
+  const sanitizedContent = sanitizeCustomerFacingContent(rawContent);
 
-  // 1. Check if user is asking about Operating Hours (Giờ mở cửa)
+  // 1. Check if user is asking about Operating Hours (only if present in this bot's docs)
   if (
     queryLower.includes('giờ mở') ||
     queryLower.includes('mở cửa') ||
     queryLower.includes('đóng cửa') ||
     queryLower.includes('mấy giờ') ||
     queryLower.includes('thời gian mở') ||
+    queryLower.includes('giờ làm việc') ||
     queryLower.includes('hoạt động lúc')
   ) {
-    const lines = rawContent.split('\n');
+    const lines = sanitizedContent.split('\n');
     let hoursLine = '';
     for (const l of lines) {
-      if (l.toLowerCase().includes('giờ mở cửa') || l.toLowerCase().includes('08:00') || l.toLowerCase().includes('21:00')) {
+      const low = l.toLowerCase();
+      if (
+        low.includes('giờ mở cửa') ||
+        low.includes('giờ làm việc') ||
+        low.includes('thời gian hoạt động') ||
+        /\d{1,2}[:h]\d{2}\s*[–-]\s*\d{1,2}[:h]\d{2}/.test(low)
+      ) {
         hoursLine = l.replace(/^[\s*•\-–]+/, '').trim();
         break;
       }
     }
 
     if (hoursLine) {
-      return `Xin chào ${displayName}! Em là ${botName}.\n\n⏰ **Thời gian hoạt động:**\n• ${hoursLine}\n\nQuán mở cửa xuyên suốt cả tuần, rất hân hạnh được đón tiếp và phục vụ bạn ạ! 🍗✨`;
+      return `Xin chào ${displayName}! Em là ${botName}.\n\n⏰ **Thời gian hoạt động:**\n• ${hoursLine}\n\nRất hân hạnh được phục vụ ${displayName} ạ!`;
     }
-    return `Xin chào ${displayName}! Em là ${botName}.\n\n⏰ **Giờ mở cửa của quán:** 08:00 – 21:00 hằng ngày (mở cửa xuyên suốt cả tuần bạn nhé)!\n\nQuán rất hân hạnh được phục vụ bạn ạ! 🍗✨`;
   }
 
-  // 2. Check if user is asking about Address / Location (Địa chỉ / Vị trí quán)
+  // 2. Check if user is asking about Address / Location (only if present in this bot's docs)
   if (
     queryLower.includes('địa chỉ') ||
     queryLower.includes('ở đâu') ||
     queryLower.includes('vị trí') ||
+    queryLower.includes('trụ sở') ||
     queryLower.includes('chỉ đường') ||
     queryLower.includes('bản đồ') ||
     queryLower.includes('maps') ||
     queryLower.includes('google maps')
   ) {
-    const lines = rawContent.split('\n');
+    const lines = sanitizedContent.split('\n');
     let addressLine = '';
     let mapsLine = '';
 
     for (const l of lines) {
       const low = l.toLowerCase();
-      if (low.includes('địa chỉ')) {
+      if (low.includes('địa chỉ') || low.includes('trụ sở')) {
         addressLine = l.replace(/^[\s*•\-–]+/, '').trim();
       } else if (low.includes('bản đồ') || low.includes('maps.app.goo.gl') || low.includes('google maps')) {
         mapsLine = l.replace(/^[\s*•\-–]+/, '').trim();
       }
     }
 
-    let reply = `Xin chào ${displayName}! Em là ${botName}.\n\n📍 **Địa chỉ quán:**\n• ${addressLine || 'Số 41 Trần Phú, Phường Phước Hậu, tỉnh Vĩnh Long.'}`;
-    if (mapsLine) {
-      reply += `\n🗺️ **Chỉ đường (Google Maps):**\n• ${mapsLine}`;
+    if (addressLine || mapsLine) {
+      let reply = `Xin chào ${displayName}! Em là ${botName}.`;
+      if (addressLine) {
+        reply += `\n\n📍 **Địa chỉ liên hệ:**\n• ${addressLine}`;
+      }
+      if (mapsLine) {
+        reply += `\n🗺️ **Chỉ đường (Google Maps):**\n• ${mapsLine}`;
+      }
+      reply += `\n\nRất hân hạnh được đón tiếp và hỗ trợ ${displayName} ạ!`;
+      return reply;
     }
-    reply += `\n\nQuán rất vui được đón tiếp bạn ghé thưởng thức ạ! 😊🍗`;
-    return reply;
   }
 
-  // 3. Check if user is asking about Hotline / Contact (Số điện thoại / Liên hệ)
+  // 3. Check if user is asking about Hotline / Contact (dynamically extracted)
   if (
     queryLower.includes('hotline') ||
     queryLower.includes('số điện thoại') ||
@@ -256,18 +389,13 @@ export function formatSmartKnowledgeReply(
     queryLower.includes('quản lý') ||
     queryLower.includes('liên hệ')
   ) {
-    const lines = rawContent.split('\n');
-    let hotlineLine = '';
-    for (const l of lines) {
-      if (l.toLowerCase().includes('hotline') || l.includes('0986.000.797') || l.toLowerCase().includes('zalo quản lý')) {
-        hotlineLine = l.replace(/^[\s*•\-–]+/, '').trim();
-        break;
-      }
+    const contactSnippet = extractContactSnippet(sanitizedContent);
+    if (contactSnippet) {
+      return `Xin chào ${displayName}! Em là ${botName}.\n\n📞 **Thông tin liên hệ hỗ trợ:**\n• ${contactSnippet}\n\nBạn có thể liên hệ theo thông tin trên để được hỗ trợ nhanh nhất nhé!`;
     }
-    return `Xin chào ${displayName}! Em là ${botName}.\n\n📞 **Hotline / Zalo Quản lý:**\n• ${hotlineLine || '0986.000.797'}\n\nBạn có thể gọi điện hoặc nhắn tin trực tiếp số trên để được hỗ trợ nhanh nhất nhé! ✨`;
   }
 
-  // 4. Check if user is asking about Online Delivery (Giao hàng tận nơi)
+  // 4. Check if user is asking about Online Delivery / Registration channels (only if mentioned in this bot's docs)
   if (
     queryLower.includes('giao hàng') ||
     queryLower.includes('đặt hàng') ||
@@ -278,25 +406,32 @@ export function formatSmartKnowledgeReply(
     queryLower.includes('villfood') ||
     queryLower.includes('app')
   ) {
-    return `Xin chào ${displayName}! Em là ${botName}.\n\n🛵 **Kênh đặt món giao tận nơi:**\n• ShopeeFood, GrabFood, VillFood (Tìm kiếm: "${botName}")\n• Hotline / Zalo đặt hàng: 0986.000.797\n\nQuán luôn sẵn sàng giao món nóng hổi, giòn rụm đến tận nhà bạn nhé! 🍗😋`;
+    const deliveryLines = sanitizedContent
+      .split('\n')
+      .filter((l) => /giao hàng|đặt hàng|ship|shopeefood|grabfood|villfood|hotline/i.test(l))
+      .map((l) => `• ${l.replace(/^[\s*•\-–]+/, '').trim()}`);
+
+    if (deliveryLines.length > 0) {
+      return `Xin chào ${displayName}! Em là ${botName}.\n\n🛵 **Thông tin đặt hàng & giao nhận:**\n${deliveryLines.join('\n')}`;
+    }
   }
 
-  // 5. Check if user is asking for the entire menu
-  const isFullMenu = /\b(menu|thực đơn|toàn bộ|tất cả|danh sách món|các món|quán có gì|có những gì|bảng giá tổng|full)\b/i.test(queryLower);
+  // 5. Check if user is asking for the entire catalog / menu / package list
+  const isFullMenu = /\b(menu|thực đơn|toàn bộ|tất cả|danh sách món|các món|bảng giá tổng|tất cả gói|full)\b/i.test(queryLower);
 
-  // 6. Intelligent fuzzy & keyword product search
-  const allItems = parseMenuItems(rawContent);
+  // 6. Intelligent fuzzy & keyword item/pricing search
+  const allItems = parseMenuItems(sanitizedContent);
 
   if (!isFullMenu) {
     const matchedItems = searchMenuItems(query, allItems);
 
     if (matchedItems.length > 0) {
       const searchTerms = extractSearchTerms(query);
-      const titleKeyword = searchTerms.phrase ? searchTerms.phrase.toUpperCase() : 'MÓN BẠN ĐANG HỎI';
+      const titleKeyword = searchTerms.phrase ? searchTerms.phrase.toUpperCase() : 'SẢN PHẨM / DỊCH VỤ';
 
       const itemsList = matchedItems
         .map((r) => {
-          let emoji = '🍴';
+          let emoji = '•';
           const nLow = r.name.toLowerCase();
           if (nLow.includes('gà')) emoji = '🍗';
           else if (nLow.includes('xúc xích') || nLow.includes('hotdog')) emoji = '🌭';
@@ -304,37 +439,61 @@ export function formatSmartKnowledgeReply(
           else if (nLow.includes('mì') || nLow.includes('spaghetti')) emoji = '🍝';
           else if (nLow.includes('nước') || nLow.includes('trà') || nLow.includes('pepsi') || nLow.includes('coca')) emoji = '🥤';
           else if (nLow.includes('viên') || nLow.includes('que') || nLow.includes('xiên')) emoji = '🍢';
+          else if (nLow.includes('gói') || nLow.includes('starter') || nLow.includes('pro') || nLow.includes('enterprise') || nLow.includes('trial')) emoji = '📦';
 
-          return `• ${emoji} **${r.name}**: ${r.price} / ${r.unit}${r.note ? ` _(${r.note})_` : ''}`;
+          const unitPart = r.unit ? ` / ${r.unit}` : '';
+          return `${emoji === '•' ? '•' : `• ${emoji}`} **${r.name}**: ${r.price}${unitPart}${r.note ? ` _(${r.note})_` : ''}`;
         })
         .join('\n');
 
-      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn thông tin giá các món **${titleKeyword}** tại quán ạ:\n\n${itemsList}\n\n✨ **Gợi ý thêm cho bạn:** Quán có các loại Xốt chấm cực ngon (Xốt phô mai / xốt mắm tỏi: 5.000đ) và Nước ngọt giải khát (10.000đ) dùng kèm để bữa ăn thêm trọn vị nhé! 😋`;
+      // Check if bot's own docs have any companion/upsell lines instead of hardcoding external items
+      const docUpsellLine = sanitizedContent
+        .split('\n')
+        .find((l) => /gợi ý thêm|ăn kèm|ưu đãi|khuyến mãi/i.test(l));
+      const upsellFooter = docUpsellLine
+        ? `\n\n✨ **Gợi ý thêm:** ${docUpsellLine.replace(/^[\s*•\-–]+/, '').trim()}`
+        : '';
+
+      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi ${displayName} thông tin chi tiết về **${titleKeyword}** ạ:\n\n${itemsList}${upsellFooter}`;
     }
 
-    // If query asks for price or a specific dish but nothing matched in menu
+    // 6.1 Search markdown headings & knowledge sections (handles e.g. "giới thiệu tính năng?", "cách sử dụng?", "chính sách?")
+    const matchedSections = searchKnowledgeSections(query, sanitizedContent);
+    if (matchedSections.length > 0) {
+      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi ${displayName} thông tin từ tài liệu của **${botName}** ạ:\n\n${matchedSections.join('\n\n')}`;
+    }
+
+    // 6.2 If user explicitly asks for price/product/package and nothing matched at all
     if (
       queryLower.includes('giá') ||
       queryLower.includes('bao nhiêu') ||
       queryLower.includes('tiền') ||
-      queryLower.includes('món')
+      queryLower.includes('gói') ||
+      queryLower.includes('món') ||
+      queryLower.includes('sản phẩm')
     ) {
       const searchTerms = extractSearchTerms(query);
       const missingTerm = searchTerms.phrase || query.replace(/[?!.,]/g, '').trim();
-      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ hiện tại em chưa tìm thấy món "${missingTerm}" trong bảng giá của quán ạ.\n\n👉 Bạn có thể nhắn **"menu"** để xem thực đơn đầy đủ các món đang phục vụ, hoặc liên hệ Hotline/Zalo Quản lý: **0986.000.797** để được nhân viên hỗ trợ nhanh nhất nhé! 🍗✨`;
+      const contactSnippet = extractContactSnippet(sanitizedContent);
+      const contactFooter = contactSnippet
+        ? `\n\n📞 **Thông tin hỗ trợ:**\n• ${contactSnippet}`
+        : '';
+      return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ hiện tại trong tài liệu của **${botName}** em chưa tìm thấy thông tin về "${missingTerm}".\n\n👉 Bạn vui lòng nhập từ khóa cụ thể hơn hoặc nhắn **"bảng giá"** / tên tính năng để em tra cứu chính xác nhất nhé!${contactFooter}`;
     }
   }
 
-  // 7. Sanitize content: strip out internal prompt rules and guidelines
-  const sanitizedContent = sanitizeCustomerFacingContent(rawContent);
-
-  // If full menu or general inquiry, format cleanly
-  if (isFullMenu) {
-    return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn **Thực đơn đầy đủ** của quán ạ:\n\n${sanitizedContent}\n\n🛵 **Đặt hàng giao tận nơi:** Quán có mặt trên ShopeeFood, GrabFood, VillFood (Tìm: "${botName}") hoặc liên hệ Hotline/Zalo Quản lý: 0986.000.797 bạn nhé! 🍗✨`;
+  // 7. Full menu / full knowledge fallback (completely bound to this bot's sanitizedContent)
+  if (isFullMenu && /\b(menu|thực đơn|danh sách món|các món)\b/i.test(queryLower)) {
+    const deliveryLines = sanitizedContent
+      .split('\n')
+      .filter((l) => /giao hàng|đặt hàng|shopeefood|grabfood|villfood/i.test(l))
+      .map((l) => l.replace(/^[\s*•\-–]+/, '').trim());
+    const deliveryNote = deliveryLines.length > 0 ? `\n\n🛵 **Kênh đặt hàng:** ${deliveryLines.join(' | ')}` : '';
+    return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn **Thực đơn đầy đủ** hiện có ạ:\n\n${sanitizedContent}${deliveryNote}`;
   }
 
   // General clean fallback
-  return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn thông tin từ quán ạ:\n\n${sanitizedContent}`;
+  return `Xin chào ${displayName}! Em là ${botName}.\n\nDạ em xin gửi bạn thông tin chi tiết ạ:\n\n${sanitizedContent}`;
 }
 
 // Strip internal administrative sections that must never be shown to customers
@@ -392,22 +551,34 @@ webhookRouter.post('/bot/:botId', async (c) => {
   const botId = c.req.param('botId');
   const now = Date.now();
 
-  // 1. Fetch bot and verify status
-  const bot = await c.env.DB.prepare(
-    `SELECT id, tenant_id, name, status, system_prompt, strict_grounding, handover_keywords, handover_minutes
-     FROM bots WHERE id = ?`
-  )
-    .bind(botId)
-    .first<{
-      id: string;
-      tenant_id: string;
-      name: string;
-      status: string;
-      system_prompt: string | null;
-      strict_grounding: number;
-      handover_keywords: string | null;
-      handover_minutes: number;
-    }>();
+  // 1. Fetch bot and verify status (with rag_scope isolation setting)
+  type WebhookBotRow = {
+    id: string;
+    tenant_id: string;
+    name: string;
+    status: string;
+    system_prompt: string | null;
+    strict_grounding: number;
+    rag_scope?: string | null;
+    handover_keywords: string | null;
+    handover_minutes: number;
+  };
+  let bot: WebhookBotRow | null = null;
+  try {
+    bot = await c.env.DB.prepare(
+      `SELECT id, tenant_id, name, status, system_prompt, strict_grounding, COALESCE(rag_scope, 'bot_and_global') as rag_scope, handover_keywords, handover_minutes
+       FROM bots WHERE id = ?`
+    )
+      .bind(botId)
+      .first<WebhookBotRow>();
+  } catch {
+    bot = await c.env.DB.prepare(
+      `SELECT id, tenant_id, name, status, system_prompt, strict_grounding, handover_keywords, handover_minutes
+       FROM bots WHERE id = ?`
+    )
+      .bind(botId)
+      .first<WebhookBotRow>();
+  }
 
   if (!bot || bot.status !== 'active') {
     return c.json({ ok: false, error: 'Bot not found or not active' }, 404);
@@ -556,20 +727,32 @@ webhookRouter.post('/bot/:botId', async (c) => {
     }
   } catch {}
 
-  // 10.2 Retrieve knowledge chunks directly from SQLite for 100% recall
-  let dbChunks: Array<{ id: string; title: string; content: string }> = [];
+  // 10.2 Retrieve knowledge chunks directly from SQLite respecting per-bot rag_scope
+  const ragScope = bot.rag_scope === 'bot_only' ? 'bot_only' : 'bot_and_global';
+  let dbChunks: Array<{ id: string; bot_id: string | null; title: string; content: string }> = [];
   try {
-    const chunkRows = await c.env.DB.prepare(`
-      SELECT c.id, c.content, d.title
-      FROM chunks c
-      JOIN documents d ON c.doc_id = d.id
-      WHERE c.tenant_id = ?
-        AND (c.bot_id = ? OR c.bot_id IS NULL OR c.bot_id = '' OR c.bot_id = 'all')
-        AND d.status = 'ready'
-      ORDER BY d.created_at DESC, c.ord ASC
-    `)
-      .bind(bot.tenant_id, bot.id)
-      .all<{ id: string; content: string; title: string }>();
+    const scopeSql =
+      ragScope === 'bot_only'
+        ? `SELECT c.id, c.bot_id, c.content, d.title
+           FROM chunks c
+           JOIN documents d ON c.doc_id = d.id
+           WHERE c.tenant_id = ?
+             AND c.bot_id = ?
+             AND d.status = 'ready'
+           ORDER BY d.created_at DESC, c.ord ASC`
+        : `SELECT c.id, c.bot_id, c.content, d.title
+           FROM chunks c
+           JOIN documents d ON c.doc_id = d.id
+           WHERE c.tenant_id = ?
+             AND (c.bot_id = ? OR c.bot_id IS NULL OR c.bot_id = '' OR c.bot_id = 'all')
+             AND d.status = 'ready'
+           ORDER BY CASE WHEN c.bot_id = ? THEN 0 ELSE 1 END, d.created_at DESC, c.ord ASC`;
+
+    const stmt = c.env.DB.prepare(scopeSql);
+    const chunkRows =
+      ragScope === 'bot_only'
+        ? await stmt.bind(bot.tenant_id, bot.id).all<{ id: string; bot_id: string | null; content: string; title: string }>()
+        : await stmt.bind(bot.tenant_id, bot.id, bot.id).all<{ id: string; bot_id: string | null; content: string; title: string }>();
 
     if (chunkRows && Array.isArray(chunkRows.results)) {
       dbChunks = chunkRows.results.filter((r) => r.content && r.content.trim());
@@ -578,16 +761,15 @@ webhookRouter.post('/bot/:botId', async (c) => {
     console.warn('[Webhook] SQLite chunks retrieval warning:', dbErr);
   }
 
-  // 10.3 Knowledge selection strategy
+  // 10.3 Knowledge selection strategy (prefer bot-dedicated chunks over global chunks)
   let relevantChunks: Array<{ title: string; content: string; score: number }> = [];
 
   if (dbChunks.length > 0 && dbChunks.length <= 20) {
-    // For small-medium knowledge base (<= 20 chunks), pass ALL chunks into context!
-    // Gemini 2.5 Flash has 1M context window; this guarantees 100% recall for menus, prices, and FAQs.
+    // For small-medium knowledge base (<= 20 chunks), pass ALL scoped chunks into context
     relevantChunks = dbChunks.map((c) => ({
       title: c.title || 'Tài liệu hướng dẫn',
       content: c.content,
-      score: 1.0,
+      score: c.bot_id === bot.id ? 2.0 : 1.0,
     }));
   } else if (dbChunks.length > 20) {
     // For large knowledge base (> 20 chunks), perform hybrid semantic & keyword scoring
@@ -596,11 +778,22 @@ webhookRouter.post('/bot/:botId', async (c) => {
       try {
         const geminiClient = new GeminiClient(activeGeminiKey);
         const embedResult = await geminiClient.embedContent({ text: safeText });
-        const qRes = await c.env.VECTORS.query(embedResult.values, { topK: 10, returnMetadata: 'all' });
-        vectorMatches = (qRes.matches || []).map((m: any) => ({
-          id: m.id,
-          score: m.score,
-        }));
+        const qRes = await c.env.VECTORS.query(embedResult.values, {
+          topK: 12,
+          filter: { tenant_id: bot.tenant_id },
+          returnMetadata: 'all',
+        });
+        vectorMatches = (qRes.matches || [])
+          .filter((m: any) => {
+            const meta = m.metadata || {};
+            if (meta.tenant_id && meta.tenant_id !== bot.tenant_id) return false;
+            if (ragScope === 'bot_only') return meta.bot_id === bot.id;
+            return !meta.bot_id || meta.bot_id === bot.id || meta.bot_id === 'all' || meta.bot_id === 'global';
+          })
+          .map((m: any) => ({
+            id: m.id,
+            score: m.score,
+          }));
       } catch (vecErr) {
         console.warn('[Webhook] Vector query warning:', vecErr);
       }
@@ -608,7 +801,7 @@ webhookRouter.post('/bot/:botId', async (c) => {
 
     const queryTokens = safeText.toLowerCase().split(/\s+/).filter((w) => w.length > 1);
     const scoredChunks = dbChunks.map((chunk) => {
-      let score = 0;
+      let score = chunk.bot_id === bot.id ? 5 : 0; // Prioritize bot-dedicated knowledge
       const contentLower = (chunk.title + ' ' + chunk.content).toLowerCase();
       for (const token of queryTokens) {
         if (contentLower.includes(token)) score += 1;
@@ -669,21 +862,21 @@ webhookRouter.post('/bot/:botId', async (c) => {
           if (textLower.includes(t)) score += 2;
         }
 
-        // Semantic keyword boosting
-        if ((queryLower.includes('giá') || queryLower.includes('bao nhiêu') || queryLower.includes('tiền')) &&
-            (textLower.includes('bảng giá') || textLower.includes('đơn vị: vnđ') || textLower.includes('đ') || textLower.includes('000đ') || textLower.includes('giá:'))) {
+        // Domain-agnostic semantic keyword boosting
+        if ((queryLower.includes('giá') || queryLower.includes('bao nhiêu') || queryLower.includes('tiền') || queryLower.includes('gói')) &&
+            (textLower.includes('bảng giá') || textLower.includes('vnđ') || textLower.includes('000đ') || textLower.includes('giá:') || textLower.includes('/tháng'))) {
           score += 10;
         }
-        if ((queryLower.includes('thực đơn') || queryLower.includes('menu') || queryLower.includes('món')) &&
-            (textLower.includes('thực đơn') || textLower.includes('menu') || textLower.includes('gà giòn') || textLower.includes('cánh gà'))) {
+        if ((queryLower.includes('thực đơn') || queryLower.includes('menu') || queryLower.includes('tính năng') || queryLower.includes('dịch vụ')) &&
+            (textLower.includes('thực đơn') || textLower.includes('menu') || textLower.includes('tính năng') || textLower.includes('dịch vụ'))) {
           score += 10;
         }
-        if ((queryLower.includes('địa chỉ') || queryLower.includes('ở đâu') || queryLower.includes('quán ở')) &&
-            (textLower.includes('địa chỉ') || textLower.includes('trần phú') || textLower.includes('vĩnh long') || textLower.includes('maps'))) {
+        if ((queryLower.includes('địa chỉ') || queryLower.includes('ở đâu') || queryLower.includes('trụ sở')) &&
+            (textLower.includes('địa chỉ') || textLower.includes('trụ sở') || textLower.includes('maps'))) {
           score += 10;
         }
-        if ((queryLower.includes('giờ') || queryLower.includes('mở cửa') || queryLower.includes('đóng cửa')) &&
-            (textLower.includes('giờ mở cửa') || textLower.includes('08:00') || textLower.includes('21:00'))) {
+        if ((queryLower.includes('giờ') || queryLower.includes('mở cửa') || queryLower.includes('làm việc')) &&
+            (textLower.includes('giờ mở cửa') || textLower.includes('giờ làm việc') || textLower.includes('hoạt động'))) {
           score += 10;
         }
 
@@ -713,6 +906,8 @@ webhookRouter.post('/bot/:botId', async (c) => {
     if (dbChunks.length > 0) {
       const combinedKnowledge = dbChunks.map((c) => c.content).join('\n\n');
       botReply = formatSmartKnowledgeReply(safeText, combinedKnowledge, bot.name, displayName);
+    } else if (isStrict) {
+      botReply = `Xin chào ${displayName}! Em là ${bot.name}. Hiện tại trong Kho Tri thức riêng của em chưa có tài liệu nào được nạp để tra cứu thông tin này ạ.`;
     } else {
       botReply = `Xin chào ${displayName}! Em là ${bot.name}. Em đã nhận được tin nhắn: "${safeText}". Hệ thống kết nối Zalo Bot đang hoạt động rất tốt!`;
     }

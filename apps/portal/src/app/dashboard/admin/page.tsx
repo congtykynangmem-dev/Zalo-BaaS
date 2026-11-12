@@ -27,6 +27,7 @@ import {
   Save,
   RefreshCw,
   Eye,
+  EyeOff,
   AlertCircle,
   PhoneCall,
   QrCode,
@@ -161,6 +162,7 @@ export default function AdminPage() {
   });
 
   const [emailLogs, setEmailLogs] = useState<EmailLogItem[]>([]);
+  const [showSmtpPass, setShowSmtpPass] = useState(false);
   const [testEmailAddress, setTestEmailAddress] = useState('');
   const [sendingTest, setSendingTest] = useState(false);
   const [testMessage, setTestMessage] = useState<{ text: string; success: boolean } | null>(null);
@@ -299,9 +301,18 @@ export default function AdminPage() {
     setTestMessage(null);
 
     try {
+      const cleanSender = emailForm.sender_email.trim();
       const res = await fetchApi<{ ok: boolean; message: string; error?: string; result: any }>('/v1/admin/send-test-email', {
         method: 'POST',
-        body: JSON.stringify({ to_email: testEmailAddress.trim() }),
+        body: JSON.stringify({
+          to_email: testEmailAddress.trim(),
+          email_config: {
+            ...emailForm,
+            sender_email: cleanSender,
+            smtp_user: emailForm.smtp_user?.trim() || cleanSender,
+            smtp_pass: emailForm.smtp_pass.replace(/\s+/g, '').trim(),
+          },
+        }),
       });
 
       const isFailed = !res.ok || res.result?.status === 'failed';
@@ -1083,16 +1094,49 @@ export default function AdminPage() {
                 </div>
 
                 <div className="sm:col-span-2">
-                  <label className="block text-xs font-semibold text-slate-700 mb-1">
-                    Mật khẩu ứng dụng Gmail (Gmail App Password - 16 ký tự)
-                  </label>
-                  <input
-                    type="password"
-                    value={emailForm.smtp_pass}
-                    onChange={(e) => setEmailForm({ ...emailForm, smtp_pass: e.target.value.replace(/\s+/g, '').trim() })}
-                    placeholder="xxxxxxxxxxxxxxxx (Tự động xóa khoảng trắng khi dán 16 ký tự App Password)"
-                    className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 text-xs font-mono focus:border-blue-600 focus:outline-none"
-                  />
+                  <div className="flex items-center justify-between mb-1">
+                    <label className="block text-xs font-semibold text-slate-700">
+                      Mật khẩu ứng dụng Gmail (Gmail App Password - 16 ký tự)
+                    </label>
+                    {emailForm.smtp_pass && (
+                      <span
+                        className={`text-[11px] font-semibold ${
+                          emailForm.smtp_host.toLowerCase().includes('gmail.com') &&
+                          emailForm.smtp_pass.length !== 16
+                            ? 'text-red-600'
+                            : 'text-emerald-600'
+                        }`}
+                      >
+                        {emailForm.smtp_pass.length}/16 ký tự
+                      </span>
+                    )}
+                  </div>
+                  <div className="relative">
+                    <input
+                      type={showSmtpPass ? 'text' : 'password'}
+                      name="smtp_app_password"
+                      autoComplete="new-password"
+                      value={emailForm.smtp_pass}
+                      onChange={(e) => setEmailForm({ ...emailForm, smtp_pass: e.target.value.replace(/\s+/g, '').trim() })}
+                      placeholder="xxxxxxxxxxxxxxxx (Tự động xóa khoảng trắng khi dán 16 ký tự App Password)"
+                      className="w-full rounded-xl border border-slate-200 px-3.5 py-2.5 pr-10 text-xs font-mono focus:border-blue-600 focus:outline-none"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => setShowSmtpPass((prev) => !prev)}
+                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600"
+                      title={showSmtpPass ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'}
+                    >
+                      {showSmtpPass ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                  {emailForm.smtp_host.toLowerCase().includes('gmail.com') &&
+                    emailForm.smtp_pass.length > 0 &&
+                    emailForm.smtp_pass.length !== 16 && (
+                      <p className="mt-1.5 text-[11px] font-medium text-red-600">
+                        ⚠️ Hiện đang nhập {emailForm.smtp_pass.length} ký tự (không phải App Password 16 ký tự của Google). Vui lòng không dùng mật khẩu đăng nhập Gmail thông thường.
+                      </p>
+                    )}
                   <p className="mt-1.5 text-[11px] text-slate-400">
                     💡 Hướng dẫn: Đăng nhập Gmail <strong>{emailForm.sender_email}</strong> → Quản lý tài khoản Google → Bảo mật → Xác minh 2 bước → Mật khẩu ứng dụng (tạo mật khẩu 16 ký tự và dán vào ô trên, sau đó bấm <strong>Lưu cấu hình Email</strong> trước khi gửi thử).
                   </p>

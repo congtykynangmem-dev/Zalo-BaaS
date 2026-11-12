@@ -60,12 +60,17 @@ export class GeminiClient {
       }
 
       try {
+        const signal =
+          typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function'
+            ? AbortSignal.timeout(12000)
+            : undefined;
         const response = await fetch(url, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
           body: JSON.stringify(bodyPayload),
+          ...(signal ? { signal } : {}),
         });
 
         if (!response.ok) {

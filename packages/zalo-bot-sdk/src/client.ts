@@ -125,26 +125,123 @@ export class ZaloBotClient {
   }
 
   /**
-   * Sends a text message (supports Markdown or HTML formatting).
+   * Sends a text message (supports Markdown, HTML, or plain text via 'none').
    */
   async sendMessage(options: SendMessageOptions): Promise<SentMessageResult> {
-    return this.request<SentMessageResult>('sendMessage', {
+    const payload: Record<string, unknown> = {
       chat_id: options.chat_id,
       text: options.text,
-      parse_mode: options.parse_mode ?? 'markdown',
-    });
+    };
+    if (options.parse_mode !== 'none') {
+      payload.parse_mode = options.parse_mode ?? 'markdown';
+    }
+    return this.request<SentMessageResult>('sendMessage', payload);
+  }
+
+  /**
+   * Splits long text cleanly under Zalo's 2000-character limit and retries as plain text
+   * if Zalo rejects Markdown formatting.
+   */
+  async sendMessageResilient(options: SendMessageOptions): Promise<SentMessageResult[]> {
+    const chunks = splitZaloMessageChunks(options.text, 1800);
+    const results: SentMessageResult[] = [];
+
+    for (const chunk of chunks) {
+      try {
+        const res = await this.sendMessage({
+          chat_id: options.chat_id,
+          text: chunk,
+          parse_mode: options.parse_mode,
+        });
+        results.push(res);
+      } catch (err) {
+        const isNonRetryable =
+          err instanceof ZaloBotApiError &&
+          (err.errorCode === 401 ||
+            err.errorCode === 403 ||
+            err.errorCode === -213 ||
+            /unauthorized|invalid token|chat not found|user has not followed/i.test(err.message));
+
+        if (isNonRetryable || options.parse_mode === 'none') {
+          throw err;
+        }
+
+        // Retry without parse_mode and strip raw markdown syntax so message still delivers cleanly
+        const plainChunks = splitZaloMessageChunks(stripMarkdownForPlainZalo(chunk), 1800);
+        for (const plain of plainChunks) {
+          const res = await this.sendMessage({
+            chat_id: options.chat_id,
+            text: plain,
+            parse_mode: 'none',
+          });
+          results.push(res);
+        }
+      }
+    }
+
+    return results;
   }
 
   /**
    * Sends a photo message with optional caption.
    */
   async sendPhoto(options: SendPhotoOptions): Promise<SentMessageResult> {
-    return this.request<SentMessageResult>('sendPhoto', {
+    const payload: Record<string, unknown> = {
       chat_id: options.chat_id,
       photo: options.photo,
       caption: options.caption,
-      parse_mode: options.parse_mode ?? 'markdown',
-    });
+    };
+    if (options.parse_mode !== 'none') {
+      payload.parse_mode = options.parse_mode ?? 'markdown';
+    }
+    return this.request<SentMessageResult>('sendPhoto', payload);
   }
+}
+
+/**
+ * Splits a long message into chunks <= maxLength at natural boundaries.
+ */
+export function splitZaloMessageChunks(text: string, maxLength = 1800): string[] {
+  const clean = (text || '').trim();
+  if (!clean) return [];
+  if (clean.length <= maxLength) return [clean];
+
+  const chunks: string[] = [];
+  let remaining = clean;
+
+  while (remaining.length > maxLength) {
+    let splitIdx = remaining.lastIndexOf('\n\n', maxLength);
+    if (splitIdx < maxLength * 0.4) {
+      splitIdx = remaining.lastIndexOf('\n', maxLength);
+    }
+    if (splitIdx < maxLength * 0.4) {
+      splitIdx = remaining.lastIndexOf(' ', maxLength);
+    }
+    if (splitIdx <= 0) {
+      splitIdx = maxLength;
+    }
+
+    const part = remaining.slice(0, splitIdx).trim();
+    if (part) chunks.push(part);
+    remaining = remaining.slice(splitIdx).trim();
+  }
+
+  if (remaining) chunks.push(remaining);
+  return chunks;
+}
+
+/**
+ * Strips Markdown formatting markers into clean readable plain text for fallback delivery.
+ */
+export function stripMarkdownForPlainZalo(text: string): string {
+  return (text || '')
+    .replace(/^#{1,6}\s+/gm, '')
+    .replace(/\*\*(.+?)\*\*/g, '$1')
+    .replace(/__(.+?)__/g, '$1')
+    .replace(/(^|\s)_([^_\n]+)_(\s|$|[.,!?;:])/g, '$1$2$3')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/\|?-{3,}\|?/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 }
 

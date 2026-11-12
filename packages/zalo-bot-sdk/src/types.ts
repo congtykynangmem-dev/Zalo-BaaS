@@ -34,7 +34,7 @@ export interface WebhookInfo {
 export interface SendMessageOptions {
   chat_id: string;
   text: string;
-  parse_mode?: 'markdown' | 'html';
+  parse_mode?: 'markdown' | 'html' | 'none';
 }
 
 export interface SendChatActionOptions {
@@ -46,7 +46,7 @@ export interface SendPhotoOptions {
   chat_id: string;
   photo: string; // URL
   caption?: string;
-  parse_mode?: 'markdown' | 'html';
+  parse_mode?: 'markdown' | 'html' | 'none';
 }
 
 export interface SentMessageResult {

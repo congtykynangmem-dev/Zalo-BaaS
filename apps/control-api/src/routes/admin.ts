@@ -5,10 +5,34 @@ import { authMiddleware, requireRole, hashPassword } from '../auth.js';
 import {
   getSystemSettings,
   sendPaymentSuccessEmail,
+  normalizeSmtpPassword,
+  validateGmailAppPassword,
   DEFAULT_CONTACT_SETTINGS,
   DEFAULT_BANK_SETTINGS,
   DEFAULT_EMAIL_CONFIG,
+  type EmailConfigSettings,
 } from '../services/email.js';
+
+function normalizeAndValidateEmailConfig(raw: any): { config?: EmailConfigSettings; error?: string } {
+  const cleanSender = String(raw?.sender_email || 'congtykynangmem@gmail.com').trim();
+  const smtpHost = String(raw?.smtp_host || 'smtp.gmail.com').trim();
+  const smtpPass = normalizeSmtpPassword(String(raw?.smtp_pass || ''));
+  const gmailErr = validateGmailAppPassword(smtpHost, smtpPass);
+  if (gmailErr) {
+    return { error: gmailErr };
+  }
+  return {
+    config: {
+      sender_email: cleanSender,
+      sender_name: String(raw?.sender_name || 'Zalo BaaS - Kỹ Năng Mềm').trim(),
+      smtp_host: smtpHost,
+      smtp_port: Number(raw?.smtp_port) || 465,
+      smtp_user: String(raw?.smtp_user || '').trim() || cleanSender,
+      smtp_pass: smtpPass,
+      auto_send_on_payment: raw?.auto_send_on_payment !== false,
+    },
+  };
+}
 import type { Env, HonoVariables } from '../types.js';
 
 export const adminRouter = new Hono<{ Bindings: Env; Variables: HonoVariables }>();
@@ -309,19 +333,14 @@ adminRouter.put('/settings', async (c) => {
   }
 
   if (body.email_config) {
-    const cleanSender = (body.email_config.sender_email || 'congtykynangmem@gmail.com').trim();
-    const normalizedEmailConfig = {
-      ...body.email_config,
-      sender_email: cleanSender,
-      smtp_host: (body.email_config.smtp_host || 'smtp.gmail.com').trim(),
-      smtp_port: Number(body.email_config.smtp_port) || 465,
-      smtp_user: (body.email_config.smtp_user || '').trim() || cleanSender,
-      smtp_pass: String(body.email_config.smtp_pass || '').replace(/\s+/g, '').trim(),
-    };
+    const validated = normalizeAndValidateEmailConfig(body.email_config);
+    if (validated.error || !validated.config) {
+      return c.json({ ok: false, error: validated.error || 'Cấu hình Email không hợp lệ' }, 400);
+    }
     await c.env.DB.prepare(
       'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
     )
-      .bind('email_config', JSON.stringify(normalizedEmailConfig), now)
+      .bind('email_config', JSON.stringify(validated.config), now)
       .run();
   }
 
@@ -367,11 +386,33 @@ adminRouter.get('/email-logs', async (c) => {
 
 // 8. Send Test Confirmation Email
 adminRouter.post('/send-test-email', async (c) => {
-  const body = await c.req.json<{ to_email?: string }>();
+  const body = await c.req.json<{ to_email?: string; email_config?: any }>();
   const toEmail = body.to_email?.trim();
 
   if (!toEmail) {
     return c.json({ error: 'Vui lòng cung cấp email nhận thư thử nghiệm' }, 400);
+  }
+
+  let configOverride: Partial<EmailConfigSettings> | undefined;
+  if (body.email_config) {
+    const validated = normalizeAndValidateEmailConfig(body.email_config);
+    if (validated.error || !validated.config) {
+      return c.json(
+        {
+          ok: false,
+          error: validated.error || 'Cấu hình Email không hợp lệ',
+          message: validated.error || 'Cấu hình Email không hợp lệ',
+        },
+        400
+      );
+    }
+    configOverride = validated.config;
+    // Persist valid config so user's unsaved form values are saved seamlessly before test
+    await c.env.DB.prepare(
+      'INSERT INTO system_settings (key, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at'
+    )
+      .bind('email_config', JSON.stringify(validated.config), Date.now())
+      .run();
   }
 
   const res = await sendPaymentSuccessEmail(c.env.DB, {
@@ -382,6 +423,8 @@ adminRouter.post('/send-test-email', async (c) => {
     days: 30,
     expiresAt: Date.now() + 30 * 86400 * 1000,
     invoiceId: `test_${nanoid(10)}`,
+    isTest: true,
+    configOverride,
   });
 
   if (res.status === 'failed' || !res.ok) {

@@ -95,11 +95,12 @@ conversationsRouter.post('/conversations/:id/reply', async (c) => {
   const zaloClient = new ZaloBotClient(botToken);
 
   const replyText = body.text.trim();
-  const sentResult = await zaloClient.sendMessage({
+  const sentResults = await zaloClient.sendMessageResilient({
     chat_id: conv.chat_id,
     text: replyText,
     parse_mode: 'markdown',
   });
+  const sentMsgId = sentResults[0]?.message_id ?? null;
 
   const now = Date.now();
   const msgId = `msg_${nanoid(16)}`;
@@ -109,7 +110,7 @@ conversationsRouter.post('/conversations/:id/reply', async (c) => {
     `INSERT INTO messages (id, tenant_id, conversation_id, direction, sender, text, zalo_msg_id, created_at)
      VALUES (?, ?, ?, 'out', 'agent', ?, ?, ?)`
   )
-    .bind(msgId, user.tenant_id, convId, replyText, sentResult.message_id, now)
+    .bind(msgId, user.tenant_id, convId, replyText, sentMsgId, now)
     .run();
 
   await c.env.DB.prepare(

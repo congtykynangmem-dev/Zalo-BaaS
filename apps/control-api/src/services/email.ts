@@ -126,6 +126,19 @@ export function normalizeSmtpPassword(pass: string): string {
 }
 
 /**
+ * Validate Gmail App Password format (16 characters when using smtp.gmail.com)
+ */
+export function validateGmailAppPassword(host: string, pass: string): string | null {
+  const cleanHost = (host || 'smtp.gmail.com').toLowerCase().trim();
+  const cleanPass = normalizeSmtpPassword(pass);
+  if (!cleanPass) return null;
+  if (cleanHost.includes('gmail.com') && cleanPass.length !== 16) {
+    return `Mật khẩu ứng dụng Gmail (App Password) phải có đúng 16 ký tự (hiện tại đang có ${cleanPass.length} ký tự — đây có thể là mật khẩu đăng nhập thường hoặc bị trình duyệt tự điền). Vui lòng vào Tài khoản Google → Bảo mật → Xác minh 2 bước → Mật khẩu ứng dụng để tạo mã 16 ký tự và dán lại.`;
+  }
+  return null;
+}
+
+/**
  * Build RFC 5322 / RFC 2045 MIME message payload for SMTP DATA command
  */
 export function buildSmtpMimePayload(options: {
@@ -198,6 +211,11 @@ async function sendViaSmtpTls(options: {
     return { ok: false, error: 'Chưa nhập Mật khẩu ứng dụng Gmail (SMTP Password).' };
   }
 
+  const gmailPassErr = validateGmailAppPassword(host, cleanPass);
+  if (gmailPassErr) {
+    return { ok: false, error: gmailPassErr };
+  }
+
   try {
     // Dynamic import to prevent Cloudflare Worker bundler issues when unused
     const tlsModule = await (Function('return import("node:tls")')() as Promise<any>);
@@ -230,6 +248,7 @@ async function sendViaSmtpTls(options: {
       let step = 0;
       let startTlsUpgraded = !useStartTls;
       let buffer = '';
+      let errorLines: string[] = [];
       let activeSocket: any = null;
 
       const attachSocketHandlers = (sock: any) => {
@@ -244,15 +263,22 @@ async function sendViaSmtpTls(options: {
             const code = parseInt(rawLine.slice(0, 3), 10);
             if (isNaN(code)) continue;
 
-            // Multi-line SMTP continuation lines have '-' at index 3 (e.g. "250-SIZE ..."); wait for final line ("250 ")
+            // Multi-line SMTP continuation lines have '-' at index 3 (e.g. "250-SIZE ..." or "534-5.7.9 ..."); wait for final line
             const isContinuation = rawLine.length >= 4 && rawLine[3] === '-';
             if (code >= 400) {
+              errorLines.push(rawLine.trim());
+              if (isContinuation) {
+                continue;
+              }
+              const fullErrLine = errorLines.join(' ');
+              errorLines = [];
               try {
                 sock.end();
               } catch {}
-              done({ ok: false, error: formatSmtpError(code, rawLine) });
+              done({ ok: false, error: formatSmtpError(code, fullErrLine) });
               return;
             }
+            errorLines = [];
             if (isContinuation) {
               continue;
             }
@@ -281,7 +307,9 @@ async function sendViaSmtpTls(options: {
               });
               attachSocketHandlers(tlsSock);
               step = 11;
-              tlsSock.write(`EHLO localhost\r\n`);
+              tlsSock.once('secureConnect', () => {
+                tlsSock.write(`EHLO localhost\r\n`);
+              });
               return;
             } else if (step === 11 && code === 250) {
               step = 2;
@@ -332,6 +360,11 @@ async function sendViaSmtpTls(options: {
 
         sock.on('close', () => {
           if (!settled && step !== 9) {
+            if (errorLines.length > 0) {
+              const code = parseInt(errorLines[0].slice(0, 3), 10) || 500;
+              done({ ok: false, error: formatSmtpError(code, errorLines.join(' ')) });
+              return;
+            }
             done({
               ok: false,
               error: `Máy chủ SMTP (${host}:${port}) đã đóng kết nối đột ngột ở bước ${step}. Vui lòng kiểm tra cổng 465/587 và App Password.`,
@@ -510,9 +543,22 @@ export async function sendPaymentSuccessEmail(
     expiresAt: number;
     invoiceId: string;
     tenantId?: string;
+    isTest?: boolean;
+    configOverride?: Partial<EmailConfigSettings>;
   }
 ): Promise<{ ok: boolean; email_id: string; status: string; error?: string }> {
-  const { contact, bank, email: emailConfig } = await getSystemSettings(db);
+  const { contact, bank, email: storedEmailConfig } = await getSystemSettings(db);
+  const emailConfig: EmailConfigSettings = params.configOverride
+    ? { ...storedEmailConfig, ...params.configOverride }
+    : storedEmailConfig;
+
+  if (!params.isTest && emailConfig.auto_send_on_payment === false) {
+    return {
+      ok: true,
+      email_id: `eml_skipped_${nanoid(10)}`,
+      status: 'skipped',
+    };
+  }
 
   const emailId = `eml_${nanoid(16)}`;
   const now = Date.now();

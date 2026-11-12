@@ -1080,4 +1080,304 @@ KHO TRI THỨC & QUY TẮC VẬN HÀNH: GÀ RÁN FIVE STAR - 41 TRẦN PHÚ
     expect(payload).toContain('To: <customer@example.com>');
     expect(payload).toContain('\r\n.\r\n');
   });
+
+  it('formatSmartKnowledgeReply handles Vietnamese synonyms and feature queries cleanly', async () => {
+    const { formatSmartKnowledgeReply } = await import('./routes/webhook.js');
+    const knowledge = [
+      '# Bảng giá dịch vụ Zalo BaaS',
+      '| Gói | Giá | Tin nhắn |',
+      '| --- | --- | --- |',
+      '| Gói Starter | 199.000đ/tháng | 1.000 tin AI |',
+      '| Gói Pro | 599.000đ/tháng | 10.000 tin AI |',
+      '',
+      '## Tính năng nổi bật',
+      '- Tự động trả lời Zalo OA / Zalo Bot 24/7 bằng Gemini AI.',
+      '- Quản lý kho tri thức PDF, DOCX, Markdown.',
+    ].join('\n');
+
+    const basicPriceReply = formatSmartKnowledgeReply(
+      'giá gói cơ bản?',
+      knowledge,
+      'Trợ lý Zalo BaaS',
+      'Mr Bửu'
+    );
+    expect(basicPriceReply).toContain('Gói Starter');
+    expect(basicPriceReply).toContain('199.000đ/tháng');
+    expect(basicPriceReply).not.toContain('| --- |');
+
+    const featuresReply = formatSmartKnowledgeReply(
+      'giới thiệu tính năng?',
+      knowledge,
+      'Trợ lý Zalo BaaS',
+      'Mr Bửu'
+    );
+    expect(featuresReply).toContain('Tự động trả lời');
+    expect(featuresReply).not.toContain('## ');
+  });
+
+  it('POST /v1/webhook/bot/:botId falls back to knowledge on empty Gemini output and retries Zalo plain text on 400 parse error', async () => {
+    const { encryptAesGcm } = await import('@zalo-baas/crypto');
+    const encryptedBotToken = await encryptAesGcm('bot_token_123:secret', env.KEK_V1);
+
+    const savedMessages: Array<{ direction: string; content: string; zaloMsgId: unknown }> = [];
+    const webhookEnv = {
+      ...env,
+      DB: {
+        prepare: vi.fn((sql: string) => {
+          const normSql = sql.replace(/\s+/g, ' ').trim();
+          let bound: unknown[] = [];
+          const exec = {
+            first: vi.fn(async () => {
+              if (normSql.includes('FROM bots')) {
+                return {
+                  id: 'bot_webhook_1',
+                  tenant_id: 'tenant_1',
+                  name: 'Bot Tư Vấn',
+                  system_prompt: 'Bạn là trợ lý tư vấn.',
+                  status: 'active',
+                  strict_grounding: 1,
+                  rag_scope: 'bot_and_global',
+                  handover_keywords: '[]',
+                  handover_minutes: 30,
+                };
+              }
+              if (normSql.includes('FROM bot_credentials')) {
+                return {
+                  bot_token_enc: encryptedBotToken,
+                  secret_token_enc: null,
+                };
+              }
+              if (normSql.includes('FROM tenants')) {
+                return {
+                  id: 'tenant_1',
+                  status: 'active',
+                  plan_id: 'pro',
+                  monthly_ai_messages: 10000,
+                };
+              }
+              if (normSql.includes('FROM conversations')) {
+                return {
+                  id: 'conv_webhook_1',
+                  state: 'ai',
+                  human_until: null,
+                };
+              }
+              if (normSql.includes('FROM usage_daily')) {
+                return { ai_messages: 1 };
+              }
+              return null;
+            }),
+            all: vi.fn(async () => {
+              if (normSql.includes('FROM chunks')) {
+                return {
+                  results: [
+                    {
+                      content:
+                        '# Bảng giá\n| Gói | Giá |\n| --- | --- |\n| Gói Starter | 199.000đ/tháng |',
+                    },
+                  ],
+                };
+              }
+              if (normSql.includes('FROM messages')) {
+                return { results: [] };
+              }
+              return { results: [] };
+            }),
+            run: vi.fn(async () => {
+              for (const p of bound) {
+                if (p === undefined) {
+                  throw new Error(`SQL bind received undefined for ${normSql}`);
+                }
+              }
+              if (normSql.includes('INSERT INTO messages')) {
+                const isOut = normSql.includes("'out'") || bound[3] === 'out';
+                savedMessages.push({
+                  direction: isOut ? 'out' : 'in',
+                  content: String(bound[3] === 'out' ? bound[5] : bound[3]),
+                  zaloMsgId: bound[3] === 'out' ? bound[6] : bound[4],
+                });
+              }
+              return { success: true };
+            }),
+          };
+          return {
+            ...exec,
+            bind: (...params: unknown[]) => {
+              bound = params;
+              return exec;
+            },
+          };
+        }),
+      } as unknown as D1Database,
+    };
+
+    let zaloSendAttempts = 0;
+    const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      if (url.includes('/sendChatAction')) {
+        return new Response(
+          JSON.stringify({ ok: true, result: true }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('generativelanguage.googleapis.com')) {
+        return new Response(
+          JSON.stringify({
+            candidates: [{ content: { parts: [{ text: '' }] } }],
+            usageMetadata: { promptTokenCount: 10, candidatesTokenCount: 0 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      if (url.includes('/sendMessage')) {
+        zaloSendAttempts += 1;
+        if (zaloSendAttempts === 1) {
+          return new Response(
+            JSON.stringify({
+              ok: false,
+              error_code: 400,
+              description: "Bad Request: can't parse entities",
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } }
+          );
+        }
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            result: { message_id: 'zalo_out_1', date: 1700000100 },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } }
+        );
+      }
+      return new Response('{}', { status: 404 });
+    });
+
+    try {
+      const res = await app.request(
+        '/v1/webhook/bot/bot_webhook_1',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            event_name: 'message.text.received',
+            message: {
+              message_id: 'zalo_in_1',
+              text: 'giá gói cơ bản?',
+              from: { id: 'chat_customer_1', display_name: 'Mr Bửu' },
+              chat: { id: 'chat_customer_1' },
+            },
+          }),
+        },
+        webhookEnv
+      );
+
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as { ok: boolean; delivered?: boolean };
+      expect(json.ok).toBe(true);
+      expect(json.delivered).toBe(true);
+      expect(zaloSendAttempts).toBe(2);
+
+      const outbound = savedMessages.find((m) => m.direction === 'out');
+      expect(outbound).toBeDefined();
+      expect(outbound!.content).toContain('Gói Starter');
+      expect(outbound!.zaloMsgId).toBe('zalo_out_1');
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
+  it('validates 16-char Gmail App Password across email helper, PUT /v1/admin/settings, and POST /v1/admin/send-test-email', async () => {
+    const { validateGmailAppPassword } = await import('./services/email.js');
+    const { signJwt } = await import('./auth.js');
+
+    expect(validateGmailAppPassword('smtp.gmail.com', 'thirteenchars')).toContain('16 ký tự');
+    expect(validateGmailAppPassword('smtp.gmail.com', 'abcd efgh ijkl mnop')).toBeNull();
+    expect(validateGmailAppPassword('smtp.custom.vn', 'shortpass')).toBeNull();
+
+    const ownerToken = await signJwt(
+      {
+        id: 'owner_1',
+        tenant_id: 'tenant_1',
+        email: 'owner@zalo-baas.vn',
+        role: 'platform_owner',
+      },
+      env.JWT_SECRET
+    );
+
+    const invalidSaveRes = await app.request(
+      '/v1/admin/settings',
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          email_config: {
+            enabled: true,
+            smtp_host: 'smtp.gmail.com',
+            smtp_port: 465,
+            smtp_user: 'congtykynangmem@gmail.com',
+            smtp_pass: 'only13charsss',
+            from_email: 'congtykynangmem@gmail.com',
+            from_name: 'Zalo BaaS',
+          },
+        }),
+      },
+      env
+    );
+    expect(invalidSaveRes.status).toBe(400);
+    const invalidSaveJson = (await invalidSaveRes.json()) as { error: string };
+    expect(invalidSaveJson.error).toContain('16 ký tự');
+
+    const validSaveRes = await app.request(
+      '/v1/admin/settings',
+      {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          email_config: {
+            enabled: true,
+            smtp_host: 'smtp.gmail.com',
+            smtp_port: 465,
+            smtp_user: 'congtykynangmem@gmail.com',
+            smtp_pass: 'abcd efgh ijkl mnop',
+            from_email: 'congtykynangmem@gmail.com',
+            from_name: 'Zalo BaaS',
+          },
+        }),
+      },
+      env
+    );
+    expect(validSaveRes.status).toBe(200);
+
+    const invalidTestEmailRes = await app.request(
+      '/v1/admin/send-test-email',
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${ownerToken}`,
+        },
+        body: JSON.stringify({
+          to_email: 'camchibuu2002@gmail.com',
+          email_config: {
+            enabled: true,
+            smtp_host: 'smtp.gmail.com',
+            smtp_port: 465,
+            smtp_user: 'congtykynangmem@gmail.com',
+            smtp_pass: 'not16chars',
+            from_email: 'congtykynangmem@gmail.com',
+          },
+        }),
+      },
+      env
+    );
+    expect(invalidTestEmailRes.status).toBe(400);
+    const invalidTestJson = (await invalidTestEmailRes.json()) as { error: string };
+    expect(invalidTestJson.error).toContain('16 ký tự');
+  });
 });

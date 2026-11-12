@@ -56,7 +56,7 @@ export function parseMenuItems(content: string): MenuItem[] {
     }
 
     // 1. Markdown table row: | Tên món/Gói | Giá | Đơn vị | Ghi chú |
-    if (trimmed.startsWith('|') && !trimmed.includes('|:--') && !trimmed.includes('|---')) {
+    if (trimmed.startsWith('|') && !/^\|[\s|:-]+\|$/.test(trimmed)) {
       const parts = trimmed.split('|').map((p) => stripMarkdownInline(p)).filter(Boolean);
       if (parts.length >= 2) {
         const name = parts[0];
@@ -151,13 +151,42 @@ export function extractSearchTerms(query: string) {
   };
 }
 
-// Searches menu items using exact phrase, normalized phrase, and word matching
+// Common Vietnamese <-> English synonym aliases for search matching
+const SEARCH_ALIASES: Array<[string, string[]]> = [
+  ['co ban', ['starter', 'basic', 'pho thong']],
+  ['starter', ['co ban', 'basic']],
+  ['dung thu', ['trial', 'free', 'mien phi']],
+  ['mien phi', ['trial', 'free', '0d']],
+  ['chuyen nghiep', ['pro', 'professional']],
+  ['doanh nghiep', ['enterprise', 'business']],
+  ['tinh nang', ['chuc nang', 'uu diem', 'loi ich']],
+];
+
+function expandSearchQueryTerms(normPhrase: string, normWords: string[]): string[] {
+  const extras = new Set<string>();
+  for (const [key, aliases] of SEARCH_ALIASES) {
+    if (normPhrase.includes(key)) {
+      for (const a of aliases) extras.add(a);
+    }
+  }
+  for (const w of normWords) {
+    for (const [key, aliases] of SEARCH_ALIASES) {
+      if (w === key) {
+        for (const a of aliases) extras.add(a);
+      }
+    }
+  }
+  return Array.from(extras);
+}
+
+// Searches menu items using exact phrase, normalized phrase, alias, and word matching
 export function searchMenuItems(query: string, items: MenuItem[]): MenuItem[] {
   const kw = extractSearchTerms(query);
   if (!kw.phrase && kw.words.length === 0) {
     return items;
   }
 
+  const aliasPhrases = expandSearchQueryTerms(kw.normPhrase, kw.normWords);
   const results: Array<{ item: MenuItem; score: number }> = [];
 
   for (const item of items) {
@@ -174,6 +203,15 @@ export function searchMenuItems(query: string, items: MenuItem[]): MenuItem[] {
     }
     if (kw.normPhrase && (normName.includes(kw.normPhrase) || normNote.includes(kw.normPhrase))) {
       score += 80;
+    }
+
+    // 1.5 Synonym alias match (e.g. "gói cơ bản" <-> "Gói Starter")
+    for (const alias of aliasPhrases) {
+      if (normName.includes(alias)) {
+        score += 75;
+      } else if (normNote.includes(alias)) {
+        score += 45;
+      }
     }
 
     // 2. Word matches
@@ -279,7 +317,17 @@ function searchKnowledgeSections(query: string, sanitizedContent: string): strin
     .filter((s) => s.score >= 10)
     .sort((a, b) => b.score - a.score);
 
-  return scored.slice(0, 3).map((s) => s.body);
+  return scored
+    .slice(0, 3)
+    .map((s) =>
+      s.body
+        .split('\n')
+        .filter((line) => !/^\|[\s|:-]+\|$/.test(line.trim()))
+        .map((line) => line.replace(/^#{1,6}\s+(.+)$/, '**$1**'))
+        .join('\n')
+        .trim()
+    )
+    .filter(Boolean);
 }
 
 // Helper to extract dynamically any contact/hotline/email line actually present in bot's docs
@@ -654,6 +702,15 @@ webhookRouter.post('/bot/:botId', async (c) => {
   const activeConvId = convRow?.id ?? convId;
   const isHumanState = convRow?.state === 'human' && (convRow.human_until ?? 0) > now;
 
+  // Auto-reset expired human handover back to AI mode
+  if (convRow?.state === 'human' && !isHumanState) {
+    try {
+      await c.env.DB.prepare("UPDATE conversations SET state = 'ai', human_until = NULL WHERE id = ?")
+        .bind(activeConvId)
+        .run();
+    } catch {}
+  }
+
   // 7. Save user message to DB
   await c.env.DB.prepare(
     `INSERT INTO messages (id, tenant_id, conversation_id, direction, sender, text, zalo_msg_id, created_at)
@@ -703,9 +760,15 @@ webhookRouter.post('/bot/:botId', async (c) => {
       .run();
 
     const handoverReply = 'Dạ em đã ghi nhận yêu cầu và chuyển tiếp tới nhân viên tư vấn. Nhân viên sẽ phản hồi bạn trong ít phút nữa ạ!';
-    const sent = await zaloClient.sendMessage({ chat_id: chatId, text: handoverReply });
+    let sentMsgId: string | null = null;
+    try {
+      const sentList = await zaloClient.sendMessageResilient({ chat_id: chatId, text: handoverReply });
+      sentMsgId = sentList[0]?.message_id ?? null;
+    } catch (hoErr) {
+      console.error('[Webhook] Failed to send handover reply to Zalo:', hoErr);
+    }
     await c.env.DB.prepare('INSERT INTO messages (id, tenant_id, conversation_id, direction, sender, text, zalo_msg_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
-      .bind(`msg_${nanoid(16)}`, bot.tenant_id, activeConvId, 'out', 'agent', handoverReply, sent.message_id, now)
+      .bind(`msg_${nanoid(16)}`, bot.tenant_id, activeConvId, 'out', 'agent', handoverReply, sentMsgId, now)
       .run();
 
     return c.json({ ok: true, handover: true });
@@ -821,6 +884,8 @@ webhookRouter.post('/bot/:botId', async (c) => {
 
   // 10.4 Generate Response (Gemini AI or Smart Direct Knowledge Fallback)
   const isStrict = bot.strict_grounding === 1;
+  let tokensIn = 0;
+  let tokensOut = 0;
 
   if (activeGeminiKey && activeGeminiKey.trim()) {
     try {
@@ -837,11 +902,31 @@ webhookRouter.post('/bot/:botId', async (c) => {
           strictGrounding: isStrict,
         });
         const prompt = contextBlock ? `${contextBlock}\n\nCâu hỏi của khách hàng: ${safeText}` : safeText;
-        const res = await geminiClient.generateContent({
-          messages: [{ role: 'user', parts: [{ text: prompt }] }],
-          systemInstruction,
-        });
-        botReply = res.text;
+
+        let res;
+        try {
+          res = await geminiClient.generateContent({
+            model: 'gemini-2.5-flash',
+            messages: [{ role: 'user', parts: [{ text: prompt }] }],
+            systemInstruction,
+          });
+        } catch (primaryErr: any) {
+          if (primaryErr?.status === 401 || primaryErr?.status === 403 || primaryErr?.message?.includes('API_KEY_INVALID')) {
+            throw primaryErr;
+          }
+          res = await geminiClient.generateContent({
+            model: 'gemini-2.0-flash',
+            messages: [{ role: 'user', parts: [{ text: prompt }] }],
+            systemInstruction,
+          });
+        }
+
+        if (!res.text || !res.text.trim()) {
+          throw new Error('Gemini returned empty response');
+        }
+        botReply = res.text.trim();
+        tokensIn = res.tokensIn || 0;
+        tokensOut = res.tokensOut || 0;
       }
     } catch (aiErr: any) {
       console.error('[Webhook] Gemini generation warning/error:', aiErr?.message, aiErr);
@@ -913,20 +998,36 @@ webhookRouter.post('/bot/:botId', async (c) => {
     }
   }
 
-  // 11. Send reply back to Zalo
-  if (botReply) {
+  // 11. Send reply back to Zalo with automatic chunking & plain-text fallback
+  if (botReply && botReply.trim()) {
     try {
-      const sent = await zaloClient.sendMessage({ chat_id: chatId, text: botReply });
+      const sentList = await zaloClient.sendMessageResilient({ chat_id: chatId, text: botReply.trim() });
+      const firstMsgId = sentList[0]?.message_id ?? null;
       await c.env.DB.prepare(
-        `INSERT INTO messages (id, tenant_id, conversation_id, direction, sender, text, zalo_msg_id, created_at)
-         VALUES (?, ?, ?, 'out', 'ai', ?, ?, ?)`
+        `INSERT INTO messages (id, tenant_id, conversation_id, direction, sender, text, zalo_msg_id, tokens_in, tokens_out, created_at)
+         VALUES (?, ?, ?, 'out', 'ai', ?, ?, ?, ?, ?)`
       )
-        .bind(`msg_${nanoid(16)}`, bot.tenant_id, activeConvId, botReply, sent.message_id, Date.now())
+        .bind(`msg_${nanoid(16)}`, bot.tenant_id, activeConvId, botReply.trim(), firstMsgId, tokensIn, tokensOut, Date.now())
         .run();
-    } catch (sendErr) {
-      console.error('[Webhook] Failed to send message to Zalo:', sendErr);
+
+      try {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        await c.env.DB.prepare(
+          `INSERT INTO usage_daily (tenant_id, bot_id, day, ai_messages, tokens_in, tokens_out)
+           VALUES (?, ?, ?, 1, ?, ?)
+           ON CONFLICT(tenant_id, bot_id, day) DO UPDATE SET
+             ai_messages = ai_messages + 1,
+             tokens_in = tokens_in + excluded.tokens_in,
+             tokens_out = tokens_out + excluded.tokens_out`
+        )
+          .bind(bot.tenant_id, bot.id, todayStr, tokensIn, tokensOut)
+          .run();
+      } catch {}
+    } catch (sendErr: any) {
+      console.error('[Webhook] Failed to send message to Zalo:', sendErr?.message || sendErr);
+      return c.json({ ok: true, delivered: false, error: sendErr?.message || 'Zalo delivery failed' });
     }
   }
 
-  return c.json({ ok: true });
+  return c.json({ ok: true, delivered: true });
 });
